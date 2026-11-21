@@ -75,7 +75,7 @@ impl App {
                                         1.0_f32,
                                         if sel { pal.accent } else { pal.border },
                                     ))
-                                    .rounding(egui::Rounding::same(10.0))
+                                    .rounding(egui::Rounding::same(8.0))
                                     .inner_margin(egui::Margin::symmetric(12.0, 10.0))
                                     .show(ui, |ui| {
                                         ui.set_width(list_w - 40.0);

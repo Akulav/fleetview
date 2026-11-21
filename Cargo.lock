@@ -1635,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "fleetview-agent"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "fleetview-master"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1699,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "fleetview-shared"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

@@ -229,6 +229,7 @@ async fn run_session(
         hostname: hostname(),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         enrollment_secret: cfg.enrollment_secret.clone(),
+        agent_key: cfg.agent_key.clone(),
     });
     framed.send(encode(&hello)?).await?;
 
@@ -311,7 +312,7 @@ async fn run_session(
                 let Some(frame) = incoming else { break };
                 let frame = frame?;
                 let msg: MasterMsg = rmp_serde::from_slice(&frame)?;
-                handle_master_msg(msg, cfg, hub, &tx_out, &mut transfers).await;
+                handle_master_msg(msg, hub, &tx_out, &mut transfers).await;
             }
         }
     }
@@ -321,7 +322,6 @@ async fn run_session(
 
 async fn handle_master_msg(
     msg: MasterMsg,
-    cfg: &AgentConfig,
     hub: &Hub,
     tx_out: &mpsc::Sender<AgentMsg>,
     transfers: &mut std::collections::HashMap<String, crate::commands::FileTransfer>,
@@ -437,7 +437,6 @@ async fn handle_master_msg(
             });
         }
     }
-    let _ = cfg; // reserved for future per-command policy checks
 }
 
 /// Apply a remote config change on a blocking thread, then schedule a service

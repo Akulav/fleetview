@@ -164,7 +164,7 @@ impl App {
         egui::Frame::none()
             .fill(pal.surface)
             .stroke(egui::Stroke::new(1.0_f32, pal.border))
-            .rounding(egui::Rounding::same(10.0))
+            .rounding(egui::Rounding::same(8.0))
             .inner_margin(egui::Margin::symmetric(6.0, 4.0))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -453,7 +453,7 @@ impl App {
         egui::Frame::none()
             .fill(tint(pal.accent, 24))
             .stroke(egui::Stroke::new(1.0_f32, tint(pal.accent, 110)))
-            .rounding(egui::Rounding::same(10.0))
+            .rounding(egui::Rounding::same(8.0))
             .inner_margin(egui::Margin::symmetric(12.0, 8.0))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());

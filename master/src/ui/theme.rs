@@ -1,4 +1,5 @@
-//! Colors, fonts and egui style for the master app.
+//! Colors, fonts and egui style for the master app: Windows 11's dark and light themes (flat layers, hairline
+//! borders, the Windows accent blue, 4 px controls and 8 px cards, Segoe UI), like Akulav's other apps.
 
 use eframe::egui::{
     self, Color32, FontData, FontDefinitions, FontFamily, FontId, Margin, Rounding, Shadow, Stroke,
@@ -36,39 +37,39 @@ impl Palette {
         if dark {
             Self {
                 dark,
-                bg: c(14, 16, 22),
-                panel: c(19, 22, 30),
-                surface: c(24, 28, 38),
-                surface2: c(33, 38, 51),
-                border: c(43, 49, 64),
-                text: c(230, 233, 240),
-                text_dim: c(155, 164, 182),
-                text_faint: c(104, 113, 133),
-                accent: c(110, 140, 255),
-                on_accent: Color32::WHITE,
-                green: c(56, 204, 138),
-                amber: c(240, 180, 50),
-                red: c(244, 92, 98),
-                blue: c(80, 180, 255),
-                violet: c(176, 132, 255),
+                bg: c(32, 32, 32),
+                panel: c(28, 28, 28),
+                surface: c(43, 43, 43),
+                surface2: c(50, 50, 50),
+                border: c(58, 58, 58),
+                text: c(255, 255, 255),
+                text_dim: c(207, 207, 207),
+                text_faint: c(157, 157, 157),
+                accent: c(96, 205, 255),
+                on_accent: Color32::BLACK,
+                green: c(108, 203, 95),
+                amber: c(252, 225, 0),
+                red: c(255, 153, 164),
+                blue: c(96, 205, 255),
+                violet: c(176, 160, 255),
             }
         } else {
             Self {
                 dark,
-                bg: c(244, 246, 250),
-                panel: c(255, 255, 255),
-                surface: c(255, 255, 255),
-                surface2: c(236, 239, 245),
-                border: c(222, 226, 235),
-                text: c(26, 31, 46),
-                text_dim: c(88, 98, 120),
-                text_faint: c(138, 146, 165),
-                accent: c(72, 104, 240),
+                bg: c(243, 243, 243),
+                panel: c(238, 238, 238),
+                surface: c(251, 251, 251),
+                surface2: c(246, 246, 246),
+                border: c(229, 229, 229),
+                text: c(26, 26, 26),
+                text_dim: c(93, 93, 93),
+                text_faint: c(138, 138, 138),
+                accent: c(0, 95, 184),
                 on_accent: Color32::WHITE,
-                green: c(26, 150, 95),
-                amber: c(196, 134, 0),
-                red: c(214, 58, 66),
-                blue: c(20, 130, 220),
+                green: c(15, 123, 15),
+                amber: c(157, 93, 0),
+                red: c(196, 43, 28),
+                blue: c(0, 95, 184),
                 violet: c(124, 77, 230),
             }
         }
@@ -161,12 +162,12 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         egui::Visuals::light()
     };
 
-    let r6 = Rounding::same(6.0);
+    let r6 = Rounding::same(4.0);
     v.panel_fill = pal.bg;
     v.window_fill = pal.surface;
     v.window_stroke = Stroke::new(1.0_f32, pal.border);
-    v.window_rounding = Rounding::same(12.0);
-    v.menu_rounding = Rounding::same(8.0);
+    v.window_rounding = Rounding::same(8.0);
+    v.menu_rounding = Rounding::same(4.0);
     v.window_shadow = Shadow {
         offset: Vec2::new(0.0, 8.0),
         blur: 28.0,
@@ -180,14 +181,14 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
         color: Color32::from_black_alpha(if pal.dark { 90 } else { 30 }),
     };
     v.extreme_bg_color = if pal.dark {
-        Color32::from_rgb(12, 14, 19)
+        Color32::from_rgb(28, 28, 28)
     } else {
-        Color32::from_rgb(250, 251, 253)
+        Color32::WHITE
     };
     v.faint_bg_color = if pal.dark {
-        Color32::from_rgb(21, 25, 34)
+        Color32::from_rgb(39, 39, 39)
     } else {
-        Color32::from_rgb(247, 248, 251)
+        Color32::from_rgb(247, 247, 247)
     };
     v.code_bg_color = pal.surface2;
     v.hyperlink_color = pal.accent;
@@ -214,20 +215,20 @@ pub fn apply(ctx: &egui::Context, pal: &Palette) {
     w.inactive.rounding = r6;
 
     let hover = if pal.dark {
-        Color32::from_rgb(42, 48, 64)
+        Color32::from_rgb(56, 56, 56)
     } else {
-        Color32::from_rgb(226, 230, 239)
+        Color32::from_rgb(240, 240, 240)
     };
     w.hovered.bg_fill = hover;
     w.hovered.weak_bg_fill = hover;
-    w.hovered.bg_stroke = Stroke::new(1.0_f32, tint(pal.accent, 160));
+    w.hovered.bg_stroke = Stroke::new(1.0_f32, pal.border);
     w.hovered.fg_stroke = Stroke::new(1.5_f32, pal.text);
     w.hovered.rounding = r6;
     w.hovered.expansion = 0.0;
 
-    w.active.bg_fill = tint(pal.accent, 70);
-    w.active.weak_bg_fill = tint(pal.accent, 70);
-    w.active.bg_stroke = Stroke::new(1.0_f32, pal.accent);
+    w.active.bg_fill = pal.surface2;
+    w.active.weak_bg_fill = pal.surface2;
+    w.active.bg_stroke = Stroke::new(1.0_f32, pal.border);
     w.active.fg_stroke = Stroke::new(1.5_f32, pal.text);
     w.active.rounding = r6;
     w.active.expansion = 0.0;

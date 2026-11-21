@@ -73,6 +73,10 @@ pub struct AgentView {
     pub last_user: Option<String>,
     /// Fleet standards applied on this PC: key -> revision (see `policy`).
     pub applied: BTreeMap<String, String>,
+    /// SHA-256 of the agent's own key (`Hello::agent_key`), pinned the first time this id connected with one.
+    /// From then on the id is refused without the same key, so the shared enrollment secret alone can't
+    /// impersonate an enrolled PC.
+    pub key_hash: Option<String>,
 }
 
 impl AgentView {
@@ -104,6 +108,7 @@ impl AgentView {
             last_os: String::new(),
             last_user: None,
             applied: BTreeMap::new(),
+            key_hash: None,
         }
     }
 
@@ -122,6 +127,7 @@ impl AgentView {
         a.last_os = known.os.clone();
         a.last_user = known.user.clone();
         a.applied = known.applied.clone();
+        a.key_hash = known.key_hash.clone();
         a
     }
 
@@ -507,6 +513,23 @@ pub struct KnownAgent {
     pub user: Option<String>,
     #[serde(default)]
     pub applied: BTreeMap<String, String>,
+    #[serde(default)]
+    pub key_hash: Option<String>,
+}
+
+/// May an agent that says it is `pinned`'s owner connect with `key`? An id with a pinned key needs exactly that
+/// key; an id without one (new, or enrolled by an agent older than 0.5.0) is let in and pinned on connect.
+pub fn agent_key_ok(pinned: Option<&str>, key: &str) -> bool {
+    match pinned {
+        None => true,
+        Some(hash) => {
+            !key.trim().is_empty()
+                && fleetview_shared::crypto::secrets_match(
+                    hash,
+                    &fleetview_shared::crypto::agent_key_hash(key),
+                )
+        }
+    }
 }
 
 pub fn load_known() -> Vec<KnownAgent> {
@@ -533,6 +556,7 @@ pub fn save_known(state: &Shared) {
             os: a.last_os.clone(),
             user: a.last_user.clone(),
             applied: a.applied.clone(),
+            key_hash: a.key_hash.clone(),
         })
         .collect();
     if let Ok(text) = serde_json::to_string_pretty(&list) {
@@ -562,6 +586,16 @@ pub fn push_bounded(buf: &mut String, text: &str, max: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_agent_key_is_required() {
+        let hash = fleetview_shared::crypto::agent_key_hash("k1");
+        assert!(agent_key_ok(None, ""));
+        assert!(agent_key_ok(None, "k1"));
+        assert!(agent_key_ok(Some(&hash), "k1"));
+        assert!(!agent_key_ok(Some(&hash), "k2"));
+        assert!(!agent_key_ok(Some(&hash), ""));
+    }
 
     #[test]
     fn push_bounded_never_splits_chars() {

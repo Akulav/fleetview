@@ -14,7 +14,7 @@ pub fn card<R>(ui: &mut Ui, pal: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R 
     egui::Frame::none()
         .fill(pal.surface)
         .stroke(Stroke::new(1.0_f32, pal.border))
-        .rounding(Rounding::same(10.0))
+        .rounding(Rounding::same(8.0))
         .inner_margin(Margin::same(14.0))
         .show(ui, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), add)
@@ -250,7 +250,7 @@ pub fn stat_tile(
     let resp = egui::Frame::none()
         .fill(pal.surface)
         .stroke(Stroke::new(1.0_f32, pal.border))
-        .rounding(Rounding::same(10.0))
+        .rounding(Rounding::same(8.0))
         .inner_margin(Margin::symmetric(16.0, 14.0))
         .show(ui, |ui| {
             // Parents are often horizontal: lay the tile out top-down.

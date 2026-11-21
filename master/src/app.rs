@@ -1652,7 +1652,7 @@ impl App {
                     egui::Frame::none()
                         .fill(pal.surface)
                         .stroke(egui::Stroke::new(1.0_f32, pal.border))
-                        .rounding(egui::Rounding::same(10.0))
+                        .rounding(egui::Rounding::same(8.0))
                         .shadow(ctx.style().visuals.popup_shadow)
                         .inner_margin(egui::Margin::symmetric(14.0, 10.0))
                         .show(ui, |ui| {

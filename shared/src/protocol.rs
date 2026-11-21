@@ -60,6 +60,13 @@ pub struct Hello {
     pub hostname: String,
     pub agent_version: String,
     pub enrollment_secret: String,
+    /// Per-agent secret generated on the PC (never leaves it except here).
+    /// The master pins its hash to `agent_id` the first time it sees it and
+    /// from then on refuses that id without the same key, so holding the
+    /// shared enrollment secret is not enough to impersonate an enrolled PC.
+    /// Empty from agents older than 0.5.0.
+    #[serde(default)]
+    pub agent_key: String,
 }
 
 /// Messages the master sends to an agent.

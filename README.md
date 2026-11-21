@@ -167,6 +167,12 @@ git push origin v0.2.0
 - [docs/SETUP.md](docs/SETUP.md): installing the master and agents, step by step
 - [docs/SECURITY.md](docs/SECURITY.md): the trust model, what to keep secret, residual risks
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the crates, the protocol and how a command travels
+- [CHANGELOG.md](CHANGELOG.md): what changed in each version
+
+## 🙏 Credits
+
+Built with [egui](https://github.com/emilk/egui), [tokio](https://tokio.rs) and [rustls](https://github.com/rustls/rustls).
+The master uses the system's Segoe UI on Windows.
 
 ---
 

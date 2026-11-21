@@ -47,6 +47,46 @@ fn fingerprint_is_stable_hex() {
 }
 
 #[test]
+fn hello_without_agent_key_still_parses() {
+    // What an agent older than 0.5.0 sends: no `agent_key` field.
+    #[derive(serde::Serialize)]
+    struct OldHello {
+        protocol: u32,
+        agent_id: String,
+        hostname: String,
+        agent_version: String,
+        enrollment_secret: String,
+    }
+    #[derive(serde::Serialize)]
+    enum OldAgentMsg {
+        Hello(OldHello),
+    }
+    let old = OldAgentMsg::Hello(OldHello {
+        protocol: PROTOCOL_VERSION,
+        agent_id: "ab12".into(),
+        hostname: "PC".into(),
+        agent_version: "0.4.1".into(),
+        enrollment_secret: "s".into(),
+    });
+    let bytes = rmp_serde::to_vec_named(&old).unwrap();
+    match rmp_serde::from_slice::<AgentMsg>(&bytes).unwrap() {
+        AgentMsg::Hello(h) => {
+            assert_eq!(h.agent_id, "ab12");
+            assert!(h.agent_key.is_empty());
+        }
+        _ => panic!("wrong variant"),
+    }
+}
+
+#[test]
+fn agent_key_hash_is_stable() {
+    let h = fleetview_shared::crypto::agent_key_hash("k1");
+    assert_eq!(h.len(), 64);
+    assert_eq!(h, fleetview_shared::crypto::agent_key_hash(" k1 "));
+    assert_ne!(h, fleetview_shared::crypto::agent_key_hash("k2"));
+}
+
+#[test]
 fn protocol_messagepack_roundtrip() {
     let msg = MasterMsg::FileChunk {
         transfer_id: "t1".into(),

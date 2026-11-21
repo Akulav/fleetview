@@ -35,10 +35,25 @@ pub fn ensure_data_dir() -> std::io::Result<PathBuf> {
 /// with an empty ACL that not even SYSTEM can read: the service then can't
 /// load its config and never starts the tray helper. The reset below also
 /// repairs files damaged that way.)
+///
+/// A standard user could also have created the folder (or things inside it)
+/// before FleetView was installed. They would then *own* those objects —
+/// owners can always rewrite an ACL — and could have planted junctions or
+/// symlinks that make the SYSTEM service write logs or stage installers
+/// somewhere they control. So ownership is taken by Administrators, and
+/// reparse points are deleted (never followed) before anything recursive runs.
 pub fn lock_down_data_dir() {
     let dir = data_dir();
+    if is_reparse_point(&dir) {
+        tracing::warn!("{} is a link; replacing it with a folder", dir.display());
+        let _ = std::fs::remove_dir(&dir).or_else(|_| std::fs::remove_file(&dir));
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    let target = dir.as_os_str().to_string_lossy().to_string();
+    // The folder itself first, so the user loses access before the walk.
+    icacls(&target, &["/setowner", "*S-1-5-32-544", "/C", "/Q"]);
     icacls(
-        &dir.as_os_str().to_string_lossy(),
+        &target,
         &[
             "/inheritance:r",
             "/grant:r",
@@ -48,11 +63,41 @@ pub fn lock_down_data_dir() {
             "/Q",
         ],
     );
-    // Children: drop explicit / broken ACLs and inherit from the folder.
+    remove_reparse_points(&dir, 0);
+    // Children: Administrators own them; drop explicit / broken ACLs and
+    // inherit from the folder. `/L` acts on a link itself, never its target.
+    let children = dir.join("*").as_os_str().to_string_lossy().to_string();
     icacls(
-        &dir.join("*").as_os_str().to_string_lossy(),
-        &["/reset", "/T", "/C", "/Q"],
+        &children,
+        &["/setowner", "*S-1-5-32-544", "/T", "/L", "/C", "/Q"],
     );
+    icacls(&children, &["/reset", "/T", "/L", "/C", "/Q"]);
+}
+
+fn is_reparse_point(p: &std::path::Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    std::fs::symlink_metadata(p)
+        .is_ok_and(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+}
+
+/// Delete every junction / symlink below `dir` (the links, not their targets).
+fn remove_reparse_points(dir: &std::path::Path, depth: u32) {
+    if depth > 8 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if is_reparse_point(&p) {
+            tracing::warn!("removing link {} from the data folder", p.display());
+            let _ = std::fs::remove_dir(&p).or_else(|_| std::fs::remove_file(&p));
+        } else if e.file_type().is_ok_and(|t| t.is_dir()) {
+            remove_reparse_points(&p, depth + 1);
+        }
+    }
 }
 
 fn icacls(target: &str, args: &[&str]) {
@@ -74,6 +119,11 @@ fn icacls(target: &str, args: &[&str]) {
 /// Stable per-machine agent id (kept separate from the installer-provided config).
 pub fn agent_id_path() -> PathBuf {
     data_dir().join("agent.id")
+}
+
+/// Per-agent secret the master pins to this PC's id (see `Hello::agent_key`).
+pub fn agent_key_path() -> PathBuf {
+    data_dir().join("agent.key")
 }
 
 pub fn config_path() -> PathBuf {

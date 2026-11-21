@@ -48,6 +48,13 @@ blocks man-in-the-middle hosts.
 After the TLS handshake the agent presents the **enrollment secret**; the master
 rejects anything else. So joining the fleet requires possessing the secret.
 
+Each agent also has its **own key** (`agent.key`, 32 random bytes, created on
+first start in the locked-down data folder and never written to the config the
+master generates). The master stores only its SHA-256 and pins it to the PC's
+id the first time that id connects with a key; from then on that id is refused
+without the same key. Agents older than 0.5.0 send no key: they still connect
+and are pinned once they update.
+
 ## What this means for secrets
 
 - **Keep `agent.config.json` and the master settings private.** Anyone with the
@@ -90,9 +97,11 @@ get sign-off from IT security before deployment.
 - **Session-0 command execution** runs as SYSTEM — scripts and installers you push
   have full control of the machine. Review what you push.
 - **One shared enrollment secret** for the whole fleet. Anyone holding it (e.g.
-  from a leaked `agent.config.json`) can enroll a fake agent, and can claim an
-  existing agent's id to receive the commands meant for that PC. Don't put
-  credentials in pushed scripts; rotate the master identity if the config leaks.
+  from a leaked `agent.config.json`) can enroll a fake agent under a new id. It
+  can't take over an enrolled PC's id once that PC's key is pinned (0.5.0+), but
+  an id that has never connected with a key can still be claimed first. Don't
+  put credentials in pushed scripts; rotate the master identity if the config
+  leaks.
 - **Beacon replay.** A signed discovery beacon isn't bound to the sender's IP,
   so a LAN host can replay one and point agents at itself. It can't finish the
   TLS handshake, so the effect is a delayed connection (DoS), not takeover. Use

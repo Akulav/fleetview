@@ -57,6 +57,11 @@ pub struct AgentConfig {
     /// only if you want end-to-end enforcement of that extra layer.
     #[serde(default)]
     pub sign_bridge_token: Option<String>,
+
+    /// Per-agent secret, kept in its own file (`agent.key`), never in the
+    /// config the master generates. Filled in by [`AgentConfig::load`].
+    #[serde(skip)]
+    pub agent_key: String,
 }
 
 fn default_telemetry_interval() -> u64 {
@@ -135,6 +140,7 @@ impl AgentConfig {
             // doesn't make the PC show up as a brand-new agent on the master.
             cfg.agent_id = load_or_create_agent_id();
         }
+        cfg.agent_key = load_or_create_secret(&paths::agent_key_path(), 32);
         Ok(cfg)
     }
 }
@@ -214,23 +220,24 @@ fn parse_config_value(key: &str, value: Option<&str>) -> anyhow::Result<serde_js
 }
 
 fn load_or_create_agent_id() -> String {
-    let path = paths::agent_id_path();
-    if let Ok(id) = std::fs::read_to_string(&path) {
-        let id = id.trim();
-        if !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit()) {
-            return id.to_string();
-        }
-    }
-    let id = new_agent_id();
-    if let Err(e) = paths::ensure_data_dir().and_then(|_| std::fs::write(&path, &id)) {
-        tracing::warn!("cannot persist agent id to {}: {e}", path.display());
-    }
-    id
+    load_or_create_secret(&paths::agent_id_path(), 16)
 }
 
-fn new_agent_id() -> String {
+/// Read a hex value from `path`, or create a random one of `bytes` bytes.
+/// Both the agent id and the agent key survive reinstalls and upgrades.
+fn load_or_create_secret(path: &std::path::Path, bytes: usize) -> String {
+    if let Ok(v) = std::fs::read_to_string(path) {
+        let v = v.trim();
+        if !v.is_empty() && v.chars().all(|c| c.is_ascii_hexdigit()) {
+            return v.to_string();
+        }
+    }
     use rand::RngCore;
-    let mut b = [0u8; 16];
+    let mut b = vec![0u8; bytes];
     rand::rngs::OsRng.fill_bytes(&mut b);
-    hex::encode(b)
+    let v = hex::encode(b);
+    if let Err(e) = paths::ensure_data_dir().and_then(|_| std::fs::write(path, &v)) {
+        tracing::warn!("cannot persist {}: {e}", path.display());
+    }
+    v
 }

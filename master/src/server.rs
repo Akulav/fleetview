@@ -183,6 +183,33 @@ where
         anyhow::bail!("bad enrollment secret from {peer}");
     }
 
+    let agent_id = if hello.agent_id.trim().is_empty() {
+        format!("host:{}", hello.hostname)
+    } else {
+        hello.agent_id.clone()
+    };
+    // The shared enrollment secret proves the agent belongs to this fleet; its own key proves it is the PC that
+    // first enrolled under this id.
+    let pinned = state
+        .lock()
+        .unwrap()
+        .agents
+        .get(&agent_id)
+        .and_then(|a| a.key_hash.clone());
+    if !crate::state::agent_key_ok(pinned.as_deref(), &hello.agent_key) {
+        let _ = framed
+            .send(encode(&MasterMsg::HelloAck {
+                accepted: false,
+                reason: "this PC id belongs to another agent".into(),
+            })?)
+            .await;
+        state.lock().unwrap().log(format!(
+            "refused {} ({agent_id}) from {peer}: its agent key does not match the one this id enrolled with",
+            hello.hostname
+        ));
+        anyhow::bail!("agent key mismatch for {agent_id} from {peer}");
+    }
+
     framed
         .send(encode(&MasterMsg::HelloAck {
             accepted: true,
@@ -194,11 +221,6 @@ where
         .set_max_frame_length(fleetview_shared::MAX_FRAME_BYTES);
 
     // Register the agent with a command channel.
-    let agent_id = if hello.agent_id.trim().is_empty() {
-        format!("host:{}", hello.hostname)
-    } else {
-        hello.agent_id.clone()
-    };
     let (tx, mut rx) = mpsc::unbounded_channel::<MasterMsg>();
 
     {
@@ -231,6 +253,9 @@ where
         } else {
             None
         };
+        if entry.key_hash.is_none() && !hello.agent_key.trim().is_empty() {
+            entry.key_hash = Some(fleetview_shared::crypto::agent_key_hash(&hello.agent_key));
+        }
         entry.online = true;
         entry.hostname = hello.hostname.clone();
         entry.addr = Some(peer);

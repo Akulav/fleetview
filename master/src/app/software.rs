@@ -156,7 +156,7 @@ impl App {
                     egui::Frame::none()
                         .fill(pal.surface)
                         .stroke(egui::Stroke::new(1.0_f32, pal.border))
-                        .rounding(egui::Rounding::same(10.0))
+                        .rounding(egui::Rounding::same(8.0))
                         .inner_margin(egui::Margin::symmetric(6.0, 4.0))
                         .show(ui, |ui| {
                             ui.set_width(table_w - 14.0);

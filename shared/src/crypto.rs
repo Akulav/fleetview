@@ -76,6 +76,12 @@ pub fn cert_fingerprint(der: &[u8]) -> String {
     hex::encode(digest)
 }
 
+/// SHA-256 of a per-agent key as lowercase hex — what the master stores, so a
+/// leaked `known_agents.json` doesn't hand out the keys themselves.
+pub fn agent_key_hash(key: &str) -> String {
+    hex::encode(Sha256::digest(key.trim().as_bytes()))
+}
+
 /// Constant-time-ish comparison of two enrollment secrets.
 pub fn secrets_match(a: &str, b: &str) -> bool {
     let a = a.as_bytes();
