@@ -16,7 +16,7 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { APP_ROOT } from "./config.js";
 import { writeJsonAtomic } from "./store.js";
 
@@ -106,8 +106,6 @@ export class AgentBuilder extends EventEmitter {
     const targetDir = join(this.config.dataDir, "agent-build");
     mkdirSync(targetDir, { recursive: true });
     const target = this.target();
-    const args = ["build", "--release", "--locked", "-p", "fleetview-agent"];
-    if (target) args.push("--target", target);
     this.state = "building";
     this.error = null;
     this.lines = [];
@@ -116,67 +114,97 @@ export class AgentBuilder extends EventEmitter {
     this.log(`building the agent (${target || "native"}) for ${this.config.publicUrl}`);
     this.emit("status", this.status());
 
-    const cargo = findCargo(this.config.cargo);
-    const child = spawn(cargo, args, {
-      cwd: this.root,
-      env: {
-        ...process.env,
-        CARGO_TARGET_DIR: targetDir,
-        FLEETVIEW_DEFAULT_MASTER_URL: this.config.publicUrl,
-        CARGO_TERM_COLOR: "never",
-      },
-      windowsHide: true,
-    });
-    this.child = child;
-    let pending = "";
-    let lastEmit = 0;
-    const onData = (d) => {
-      pending += d.toString("utf8");
-      const parts = pending.split(/\r?\n/);
-      pending = parts.pop();
-      for (const l of parts) if (l.trim()) this.lines.push(l);
-      if (this.lines.length > LOG_LINES) this.lines.splice(0, this.lines.length - LOG_LINES);
-      if (Date.now() - lastEmit > 1000) {
-        lastEmit = Date.now();
-        this.emit("status", this.status());
-      }
-    };
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
-    const done = (err) => {
-      if (this.child !== child) return;
-      this.child = null;
-      if (pending.trim()) this.lines.push(pending);
-      this.finishedAt = new Date().toISOString();
-      if (!err) {
-        const exe = join(targetDir, target || "", "release", "fleetview-agent.exe");
-        try {
-          const version = this.pkg.save(readFileSync(exe));
-          this.meta = { fingerprint, built_at: this.finishedAt, version, target: target || "native", url: this.config.publicUrl };
-          writeJsonAtomic(this.metaPath, this.meta);
-          this.state = "ready";
-          this.log(`agent ${version} built`);
-        } catch (e) {
-          err = `the build finished but ${exe} is unusable: ${e.message}`;
-        }
-      }
-      if (err) {
-        this.state = "failed";
-        this.error = err;
-        this.log(`agent build failed: ${err}`);
-      }
-      this.emit("status", this.status());
-      if (this.again) {
-        this.again = false;
-        this.ensure();
-      }
-    };
-    child.on("error", (e) =>
-      done(e.code === "ENOENT" ? `cargo not found (${cargo}); install Rust on the master or set FLEETVIEW_CARGO` : e.message),
-    );
-    child.on("close", (code) => done(code === 0 ? null : `cargo exited with code ${code}${hint(this.lines, target)}`));
+    this.run({ fingerprint, targetDir, target }).catch((e) => this.finish(fingerprint, targetDir, target, e.message));
   }
 
+  async run({ fingerprint, targetDir, target }) {
+    const cargo = findCargo(this.config.cargo);
+    const env = {
+      ...process.env,
+      CARGO_TARGET_DIR: targetDir,
+      FLEETVIEW_DEFAULT_MASTER_URL: this.config.publicUrl,
+      CARGO_TERM_COLOR: "never",
+    };
+    if (target) {
+      // Installing the target needs no root and is instant once it's there.
+      const rustup = join(dirname(cargo), process.platform === "win32" ? "rustup.exe" : "rustup");
+      const r = await this.step(existsSync(rustup) ? rustup : "rustup", ["target", "add", target], env);
+      if (r.error?.code === "ENOENT") throw new Error(`rustup not found; run: rustup target add ${target}`);
+      if (r.code !== 0) throw new Error(`rustup target add ${target} failed (exit code ${r.code})`);
+      // The mingw linker is a system package: it can't be installed from here.
+      if (target.endsWith("-windows-gnu") && process.platform !== "win32" && !onPath("x86_64-w64-mingw32-gcc")) {
+        throw new Error("the mingw-w64 linker is missing — install it on the server: sudo apt install gcc-mingw-w64-x86-64");
+      }
+    }
+    const args = ["build", "--release", "--locked", "-p", "fleetview-agent"];
+    if (target) args.push("--target", target);
+    const r = await this.step(cargo, args, env);
+    if (r.error) {
+      throw new Error(r.error.code === "ENOENT" ? `cargo not found (${cargo}); install Rust on the master or set FLEETVIEW_CARGO` : r.error.message);
+    }
+    this.finish(fingerprint, targetDir, target, r.code === 0 ? null : `cargo exited with code ${r.code}${hint(this.lines, target)}`);
+  }
+
+  /** Run one command, its output going to the build log. */
+  step(cmd, args, env) {
+    return new Promise((resolve) => {
+      this.lines.push(`$ ${[cmd.split(/[\\/]/).pop(), ...args].join(" ")}`);
+      const child = spawn(cmd, args, { cwd: this.root, env, windowsHide: true });
+      this.child = child;
+      let pending = "";
+      let lastEmit = 0;
+      const onData = (d) => {
+        pending += d.toString("utf8");
+        const parts = pending.split(/\r?\n/);
+        pending = parts.pop();
+        for (const l of parts) if (l.trim()) this.lines.push(l);
+        if (this.lines.length > LOG_LINES) this.lines.splice(0, this.lines.length - LOG_LINES);
+        if (Date.now() - lastEmit > 1000) {
+          lastEmit = Date.now();
+          this.emit("status", this.status());
+        }
+      };
+      child.stdout.on("data", onData);
+      child.stderr.on("data", onData);
+      let settled = false;
+      const end = (result) => {
+        if (settled) return;
+        settled = true;
+        if (pending.trim()) this.lines.push(pending);
+        if (this.child === child) this.child = null;
+        resolve(result);
+      };
+      child.on("error", (error) => end({ code: null, error }));
+      child.on("close", (code) => end({ code, error: null }));
+    });
+  }
+
+  finish(fingerprint, targetDir, target, err) {
+    if (this.state !== "building") return;
+    this.finishedAt = new Date().toISOString();
+    if (!err) {
+      const exe = join(targetDir, target || "", "release", "fleetview-agent.exe");
+      try {
+        const version = this.pkg.save(readFileSync(exe));
+        this.meta = { fingerprint, built_at: this.finishedAt, version, target: target || "native", url: this.config.publicUrl };
+        writeJsonAtomic(this.metaPath, this.meta);
+        this.state = "ready";
+        this.log(`agent ${version} built`);
+      } catch (e) {
+        err = `the build finished but ${exe} is unusable: ${e.message}`;
+      }
+    }
+    if (err) {
+      this.state = "failed";
+      this.error = err;
+      this.log(`agent build failed: ${err}`);
+    }
+    this.emit("status", this.status());
+    if (this.again) {
+      this.again = false;
+      this.ensure();
+    }
+  }
   close() {
     this.child?.kill();
     this.child = null;
@@ -188,6 +216,10 @@ function hint(lines, target) {
   if (/target may not be installed|can't find crate for `std`/.test(text)) return ` — run: rustup target add ${target}`;
   if (/x86_64-w64-mingw32-(gcc|dlltool)|linker .* not found/.test(text)) return " — install mingw-w64 (apt install gcc-mingw-w64-x86-64)";
   return "";
+}
+
+function onPath(exe) {
+  return (process.env.PATH ?? "").split(delimiter).some((d) => d && existsSync(join(d, exe)));
 }
 
 function findCargo(configured) {
