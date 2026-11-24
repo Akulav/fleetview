@@ -129,7 +129,12 @@ export class AgentBuilder extends EventEmitter {
       // Installing the target needs no root and is instant once it's there.
       const rustup = join(dirname(cargo), process.platform === "win32" ? "rustup.exe" : "rustup");
       const r = await this.step(existsSync(rustup) ? rustup : "rustup", ["target", "add", target], env);
-      if (r.error?.code === "ENOENT") throw new Error(`rustup not found; run: rustup target add ${target}`);
+      if (r.error?.code === "ENOENT") {
+        throw new Error(
+          `rustup not found next to ${cargo}. A cargo from the system's packages (apt) can't add Windows targets: ` +
+            "install Rust with rustup for the user the site runs as (curl https://sh.rustup.rs -sSf | sh), or point FLEETVIEW_CARGO at its cargo",
+        );
+      }
       if (r.code !== 0) throw new Error(`rustup target add ${target} failed (exit code ${r.code})`);
       // The mingw linker is a system package: it can't be installed from here.
       if (target.endsWith("-windows-gnu") && process.platform !== "win32" && !onPath("x86_64-w64-mingw32-gcc")) {
@@ -148,7 +153,7 @@ export class AgentBuilder extends EventEmitter {
   /** Run one command, its output going to the build log. */
   step(cmd, args, env) {
     return new Promise((resolve) => {
-      this.lines.push(`$ ${[cmd.split(/[\\/]/).pop(), ...args].join(" ")}`);
+      this.lines.push(`$ ${[cmd, ...args].join(" ")}`);
       const child = spawn(cmd, args, { cwd: this.root, env, windowsHide: true });
       this.child = child;
       let pending = "";
