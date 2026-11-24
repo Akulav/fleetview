@@ -6,8 +6,8 @@ import { startMaster } from "./src/master.js";
 
 loadDotEnv();
 const major = Number(process.versions.node.split(".")[0]);
-if (major < 20) {
-  console.error(`FleetView needs Node.js 20 or newer (this is ${process.versions.node}).`);
+if (major < 18 || (major === 18 && Number(process.versions.node.split(".")[1]) < 17)) {
+  console.error(`FleetView needs Node.js 18.17 or newer (this is ${process.versions.node}).`);
   process.exit(1);
 }
 

@@ -141,6 +141,34 @@ Two ports matter:
 4. Firewall: allow 443 (and 80 for the certificate) and **48620/tcp**.
 5. Health check: `GET /healthz`.
 
+### With AutoNode
+
+[AutoNode](https://github.com/Akulav/auto-node) can host the master straight from this repository:
+
+1. **Websites → New Website → From GitHub** → `Akulav/fleet-manager` (branch `main`). The root
+   `package.json` makes AutoNode treat it as a Node.js site (`npm start` → `master/server.js`); the Rust
+   agent next to it is not built.
+2. **Settings → Environment variables** of the site:
+   - `FLEETVIEW_ADMIN_PASSWORD_HASH`: the line printed by `npm run hash-password` (run it on any PC
+     with Node, in `master/`). Without it, a random password is printed once in the site's **Logs**.
+   - `FLEETVIEW_AGENT_ADDRESS`: where agents connect (see the Cloudflare note below).
+   - Optional: `FLEETVIEW_MASTER_NAME`, `FLEETVIEW_EMANAGEMENT_URL`.
+
+   `PORT`, `HOST` and `DATA_DIR` come from AutoNode: the master's identity, PCs, jobs and uploads live in
+   the site's data folder, which deploys and rollbacks never touch (and full backups include).
+3. **Domains** → add `fleetview.akulav.com` to the site. Health check path: `/healthz`.
+4. **Router:** forward **TCP 48620** to the AutoNode server. AutoNode's proxy only carries the web
+   console (80/443); the agents' TLS channel goes to the master directly.
+5. Moving from the desktop master: put its `master.settings.json` and `known_agents.json` in a folder on
+   the server and run `DATA_DIR=<site data folder> npm run import-desktop-master -- <that folder>` in
+   `master/` as the site user (or upload `master.settings.json` into the site's data folder with the
+   Files tab, then restart the site).
+
+**Cloudflare:** if `fleetview.akulav.com` is proxied (orange cloud), Cloudflare carries only HTTP(S), so
+agents can't reach port 48620 through that name. Give them a DNS-only (grey cloud) record, e.g.
+`agents.akulav.com` → your public IP, and set `FLEETVIEW_AGENT_ADDRESS=agents.akulav.com:48620`. If the
+AutoNode server is on the same LAN as the PCs, leave it empty: they find it by broadcast.
+
 If the master runs inside the institution's LAN, agents find it by broadcast and
 `FLEETVIEW_AGENT_ADDRESS` can stay empty. If it runs elsewhere (a VPS), set
 `FLEETVIEW_AGENT_ADDRESS=fleetview.akulav.com:48620` and point existing agents

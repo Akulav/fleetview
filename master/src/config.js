@@ -34,13 +34,15 @@ const int = (v, dflt) => {
 
 export function loadConfig(env = process.env) {
   const publicUrl = (env.FLEETVIEW_PUBLIC_URL || "https://fleetview.akulav.com").replace(/\/+$/, "");
-  const httpHost = env.FLEETVIEW_HTTP_HOST || "127.0.0.1";
+  // FLEETVIEW_* wins; otherwise the host platform's PORT / HOST / DATA_DIR
+  // (AutoNode, and most Node hosts, set these), then the defaults.
+  const httpHost = env.FLEETVIEW_HTTP_HOST || env.HOST || "127.0.0.1";
   const cfg = {
     /** Where people open the console. Used for cookies and links. */
     publicUrl,
     /** The web console listens here (put a reverse proxy with HTTPS in front). */
     httpHost,
-    httpPort: int(env.FLEETVIEW_HTTP_PORT, 8080),
+    httpPort: int(env.FLEETVIEW_HTTP_PORT, int(env.PORT, 8080)),
     /** Optional HTTPS directly in Node (PEM paths) instead of a proxy. */
     httpsCert: env.FLEETVIEW_HTTPS_CERT || "",
     httpsKey: env.FLEETVIEW_HTTPS_KEY || "",
@@ -56,7 +58,8 @@ export function loadConfig(env = process.env) {
     discovery: bool(env.FLEETVIEW_DISCOVERY, true),
     discoveryPort: int(env.FLEETVIEW_DISCOVERY_PORT, 48621),
 
-    dataDir: resolve(APP_ROOT, env.FLEETVIEW_DATA_DIR || "data"),
+    /** Identity, PCs, jobs, uploads. On AutoNode: its DATA_DIR, which deploys never touch. */
+    dataDir: resolve(APP_ROOT, env.FLEETVIEW_DATA_DIR || env.DATA_DIR || "data"),
     masterName: env.FLEETVIEW_MASTER_NAME || "",
     emanagementUrl: (env.FLEETVIEW_EMANAGEMENT_URL || "").trim(),
 

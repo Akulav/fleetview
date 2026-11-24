@@ -1,0 +1,14 @@
+{
+  "name": "fleetview",
+  "version": "1.0.0",
+  "description": "FleetView: web console + agent server (master/) and Windows agent (agent/). This file lets Node hosts such as AutoNode run the master from the repository root.",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node master/server.js",
+    "test": "node --test master/test/unit.test.js"
+  }
+}
