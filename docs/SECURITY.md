@@ -66,8 +66,9 @@ and are pinned once they update.
   written to fresh, randomly named folders inside it and deleted after running.
 - The IPC token for the service↔helper channel is passed to the helper on its
   command line only (it is no longer written to `status.json`).
-- The master's identity key and TLS private key live in `%APPDATA%\FleetView` on
-  the master host. Back them up; losing them means re-provisioning all agents.
+- The master's identity key, TLS private key and enrollment secret live in
+  `master/data/master.settings.json` (written with mode 600 on Linux). Back it
+  up; losing it means re-provisioning all agents. Never commit `data/` or `.env`.
 
 ## Transparency & accountability (by design)
 
@@ -106,9 +107,17 @@ get sign-off from IT security before deployment.
   so a LAN host can replay one and point agents at itself. It can't finish the
   TLS handshake, so the effect is a delayed connection (DoS), not takeover. Use
   a fixed `master_address` if this matters.
-- **No master-side operator auth.** Anyone who can use the master PC's Windows
-  session controls the fleet. Lock the session; `%APPDATA%\FleetView` holds the
-  private keys in plain JSON (user-only ACL by default).
+- **Console access = SYSTEM on every PC.** The web console has one admin
+  account (scrypt-hashed password from `.env`), an HttpOnly + SameSite=Strict
+  (+ Secure on https) session cookie, a required `X-FleetView` header on every
+  change (CSRF guard), a strict Content-Security-Policy, and locks an IP out for
+  10 minutes after 8 failed sign-ins in 15 minutes. Use a long password, serve
+  it only over HTTPS, and consider limiting the console to your office IPs at
+  the proxy. Every action is logged with the user who did it.
+- **Passwords set from the console** (local accounts) travel to the agent inside
+  the pinned TLS channel and the PowerShell script the agent runs; they are kept
+  only in the master's memory until delivered (not in `jobs.json`) and never in
+  the first line of the script, which is what the agent's audit log records.
 - **Inventory** is read by the SYSTEM service, so per-user installs (HKCU of the
   logged-in user) are not listed.
 - The master's periodic beacon broadcast to UDP 48621 is not received by agents

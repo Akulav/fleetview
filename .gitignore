@@ -14,3 +14,9 @@ installer/agent.config.json
 *.key
 master.settings.json
 known_agents.json
+
+# Node master: runtime data and local config hold every secret
+master/node_modules/
+master/data/
+master/.env
+installer/assets/icon-preview.png

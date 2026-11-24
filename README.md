@@ -1,178 +1,221 @@
 <div align="center">
 
-<img src="installer/assets/logo.png" alt="FleetView" width="128" height="128">
+<img src="installer/assets/logo.png" alt="FleetView" width="112" height="112">
 
 # FleetView
 
-**Self-hosted fleet management for Windows LANs, made by Akulav.**
+**Self-hosted management for a fleet of Windows PCs, made by Akulav.**
 
-No cloud. No server to run. The master is a desktop app on your own PC, and agents find it on the LAN even when its address changes.
+A web console (Node.js) at **https://fleetview.akulav.com** and a small Windows agent on every PC.
+Push silent installers to one PC, a few, or all of them, and see each PC's result.
 
-[![Latest release](https://img.shields.io/github/v/release/Akulav/fleet-manager?style=for-the-badge&label=release&color=e5383b)](https://github.com/Akulav/fleet-manager/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Akulav/fleet-manager/total?style=for-the-badge&color=f4b740)](https://github.com/Akulav/fleet-manager/releases)
+[![Latest release](https://img.shields.io/github/v/release/Akulav/fleet-manager?style=for-the-badge&label=release&color=2c62f6)](https://github.com/Akulav/fleet-manager/releases/latest)
 [![Build](https://img.shields.io/github/actions/workflow/status/Akulav/fleet-manager/ci.yml?branch=main&style=for-the-badge&label=build)](https://github.com/Akulav/fleet-manager/actions/workflows/ci.yml)
 
-![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white)
-![Rust](https://img.shields.io/badge/made%20with-Rust-B7410E?style=flat-square&logo=rust&logoColor=white)
-![LAN only](https://img.shields.io/badge/cloud-none-2ea44f?style=flat-square)
+![Windows](https://img.shields.io/badge/agent-Windows%2010%20%7C%2011-0078D6?style=flat-square&logo=windows&logoColor=white)
+![Node](https://img.shields.io/badge/master-Node.js%2020%2B-3c873a?style=flat-square&logo=nodedotjs&logoColor=white)
 ![License](https://img.shields.io/badge/license-source--available-5c6270?style=flat-square)
 
-[Quick start](#-quick-start) ·
-[Setup guide](docs/SETUP.md) ·
-[Security model](docs/SECURITY.md) ·
-[Architecture](docs/ARCHITECTURE.md)
-
-### [⬇ Download the latest release](https://github.com/Akulav/fleet-manager/releases/latest)
+[Master setup](#-master-setup) · [Deploy at fleetview.akulav.com](#-deploy-at-fleetviewakulavcom) ·
+[Push software](#-pushing-software) · [Testing](#-testing) · [Security](docs/SECURITY.md) · [Architecture](docs/ARCHITECTURE.md)
 
 </div>
 
 ---
 
-FleetView is a lightweight master/agent system for managing a fleet of Windows
-PCs on a local network. It was built for the case where you administer dozens of
-machines by hand and are **not allowed to run your own servers**: the master is
-just a desktop app you run on your own PC, and agents find it automatically over
-the LAN even when IP addresses change.
+> ⚠️ **Authorized use only.** The agent runs commands as SYSTEM and can take
+> screenshots. Install it only on PCs you administer and tell their users. The
+> agent is deliberately visible (tray icon, logon splash, on-screen frame while
+> the screen is viewed) and logs every remote command locally.
 
-> ⚠️ **Authorized use only.** FleetView runs commands as SYSTEM and can view
-> screens. Deploy it only on machines you are authorized to administer, and tell
-> your users it is installed. The agent is intentionally **visible** (tray icon +
-> logon splash) and every remote command is written to a local audit log.
+## What it does
 
-## ✨ Features
-
-- **Auto-discovery** — agents locate the master via signed UDP broadcasts, so the
-  master's IP can change freely. A fixed address and extra subnets are also
-  configurable.
-- **Live telemetry** — CPU, memory, **disk usage**, uptime, OS, logged-in user,
-  IP/MAC addresses, refreshed on a schedule.
-- **Online vs. ever-seen** — the dashboard shows how many PCs are online now
-  against the total number ever enrolled.
-- **Software inventory** — the installed-programs list from each machine.
-- **Remote install / uninstall** — push one or **several installers at once**
-  (`.exe`/`.msi`) from the master and run them **silently as admin**, or install
-  from a URL. Silent switches are **detected per file** (MSI, Inno Setup, NSIS,
-  WiX bundle, InstallShield, Advanced Installer); installs run one after another
-  on each PC so MSIs never collide, and "restart required" (3010) counts as
-  success. Failed MSIs report the tail of their log. URL installs are
-  **https-only**; runs time out after 60 minutes.
-- **Standards** — one local admin account (same name + password on every PC,
-  optionally demoting every other local admin), one desktop background (for all
-  profiles and new users, optionally locked) and one app package. Each can be
-  kept applied **automatically**, so PCs that enroll later get it too. PCs can be
-  renamed one by one or from a pattern such as `ANSC-###`.
-- **PowerShell as admin** — run a script on one machine or **all online machines**
-  at once (with a confirmation); output comes back to the console.
-- **Screenshots & live view** — capture the screen on demand or stream it. The
-  agent notifies the user for every screenshot and when a live view starts.
-- **Hardened transport** — TLS with certificate pinning + a shared enrollment
-  secret, so agents trust only *your* master.
-- **Always-on agent** — runs as a LocalSystem Windows service, auto-starts at
-  boot, and restarts automatically if it stops.
-- **One exe, remote updates** — the agent exe installs and updates itself (no
-  installer); the master shows every agent's version and pushes updates to
-  outdated PCs, with automatic rollback if a new version doesn't start.
-- **MoldSign signing bridge** — optional: lets e-Management ANSC sign documents
-  with the user's token through the agent (set the e-Management URL in the master).
-- **Fleet actions & remote config** — push one installer or URL to every online
-  PC at once, and change a few agent settings (e-Management URL, master address,
-  discovery, telemetry interval) on running PCs without reinstalling.
-- **Visible remote viewing** — while the screen is captured or streamed, the
-  agent shows a red frame + watermark across the desktop and a toast; nothing is
-  hidden from the user.
-- **Localized** — the master app is **English**; the agent tray/splash default to
-  **Romanian**.
-
-### 🖥️ The master app
-
-- **Dashboard** — online/known PCs, PCs needing attention, outdated agents and
-  running jobs at a glance, plus fleet CPU/memory/disk averages, the busiest PCs,
-  OS breakdown, recent jobs and activity.
-- **Devices table** — search (Ctrl+F), status chips (online, offline, needs
-  attention, outdated), tag filter, sortable columns with CPU/memory/disk meters,
-  and CSV export.
-- **Bulk actions** — tick any set of PCs and run a script, install, message
-  users, update the agent, restart/shut down (with a 1-minute warning, and
-  cancel), Wake-on-LAN, tag, push remote config, or remove offline PCs. Risky
-  actions always show a confirmation listing every target.
-- **Jobs** — every action becomes a job with a per-PC result (succeeded,
-  failed + exit code, skipped, running) and its output; re-run the failures.
-- **Alerts** — disk, memory, sustained CPU, long-offline and failed-update
-  alerts with adjustable thresholds.
-- **Device page** — live CPU/memory charts, disks, system facts (click to copy),
-  tags and notes, software with uninstall, a PowerShell console with a snippet
-  library, saved snippets and history (Ctrl+Enter / Ctrl+↑↓), screen capture with
-  fit/actual size and save-as-PNG, and the PC's job history.
-- **Fleet software** — every program across the fleet, how many PCs have it,
-  which versions, where it is missing, and uninstall from all of them.
-- **Dark and light themes.**
-- **Demo mode** — `fleetview-master.exe --demo` opens a simulated fleet (no
-  network, separate data folder) to try the app without agents.
+- **Computers**: online/offline status, user, Windows version, CPU/memory/disk,
+  installed programs, agent version. Search and filters.
+- **Install software**: one screen. Drop an `.exe`/`.msi` (or reuse one you
+  uploaded before), check the detected silent switches, choose *this PC /
+  selected / all online / all*, and click Install. Every PC shows its state
+  live: *Waiting for PC → Sending n % → Installing → Done / Failed*, with the
+  exit code and what it means, the exact command that ran and, for MSI and
+  Inno Setup, the end of the installer's log.
+- **Offline PCs** get the install when they next connect (on by default).
+- **Maintenance**, on one PC or the whole fleet: check / install Windows
+  updates, `sfc /scannow`, DISM repair, Defender update + quick scan, temp-file
+  cleanup, disk health, group-policy refresh, DNS flush, restart / shut down
+  with a warning (and cancel). Each PC reports a one-line summary plus the
+  full output.
+- **Local accounts** per PC (enabled, administrator, last sign-in, password
+  age), with rename, set password, enable/disable, add/remove administrator,
+  create, delete. The same action can go to many PCs at once, e.g. set
+  `itadmin`'s password everywhere. Passwords are never stored, and a PC's last
+  administrator is never removed.
+- PowerShell as SYSTEM, messages to the logged-in user, screenshots (the user is
+  notified), uninstall from a PC's program list, agent updates, and a remote
+  change of the agent's master address.
+- **Tray icon** on every PC that shows the agent's state: connected, searching
+  (offline), installing, screen being viewed.
 
 ## 🗂️ Project layout
 
 | Path | What it is |
 |------|------------|
-| `shared/` | Wire protocol, crypto/identity, discovery message format. |
-| `agent/`  | The agent: Windows service + user-session tray/splash/capture helper. |
-| `master/` | The `egui` desktop control app. |
-| `installer/` | Master Inno Setup script + branding assets (icons, splash). |
-| `.github/workflows/` | CI build and tagged `.exe` auto-releases. |
+| `master/` | The master: Node.js web console + agent server (no npm dependencies). |
+| `agent/`  | The agent (Rust): Windows service + tray/splash/screen-capture helper. One exe that installs and updates itself. |
+| `shared/` | Wire protocol, crypto and package format used by the agent (and mirrored by the master). |
+| `installer/assets/` | Icons (generated by `tools/make-icons.mjs`) and splash. |
 | `docs/` | Setup, security and architecture notes. |
 
-## 🚀 Quick start
+## 🚀 Master setup
 
-1. **Install the master** (`FleetViewMaster-Setup`). On first launch it generates
-   its identity, TLS certificate and an enrollment secret.
-2. In the master, click **“Agent installer”** → **“Save agent setup (.exe)…”**.
-   That one file is the agent: it carries the config that pins your master.
-3. **Double-click it on each PC** (UAC prompt; `/S` for silent). It installs the
-   service, shows the logon splash, and appears in the tray. Running it again,
-   or a newer one, updates the agent in place.
-4. Agents discover the master and appear in the list. Select one to see telemetry,
-   push software, run PowerShell, or view the screen.
-5. **Updates:** after upgrading the master, *Fleet overview* → **“⬆ Update N
-   outdated online PC(s)”** pushes the new agent to every PC remotely.
-
-See [docs/SETUP.md](docs/SETUP.md) for the full walkthrough and
-[docs/SECURITY.md](docs/SECURITY.md) for the trust model and hardening steps.
-
-## 🛠️ Building from source
-
-Requires the Rust MSVC toolchain (and Inno Setup 6 for the master installer).
+Needs **Node.js 20+** (no `npm install`: the master has no dependencies).
 
 ```bash
-cargo build --workspace --release
+cd master
+cp .env.example .env        # then edit it
+npm run hash-password       # paste the printed line into .env
+npm start
 ```
 
-Binaries land in `target/release/` (`fleetview-master.exe`, `fleetview-agent.exe`).
-The agent exe needs no installer; build the master's with `installer/master.iss`
-(see [docs/SETUP.md](docs/SETUP.md)).
+Open the console at `http://127.0.0.1:8080` locally, or at the public URL once
+it's behind HTTPS. Without a password hash, the first start prints a random
+password once.
 
-## 🏷️ Releases
+Configuration (`master/.env`, all optional):
 
-One version for everything: `[workspace.package] version` in `Cargo.toml`. Bump
-it, commit, then push the matching tag; `.github/workflows/release.yml` checks
-the tag against `Cargo.toml`, builds and tests, and publishes
-`FleetViewMaster-Setup-x.y.z.exe` (with the agent package),
-`FleetViewAgent-x.y.z.exe` and `fleetview-master.exe`.
+| Variable | Default | Meaning |
+|---|---|---|
+| `FLEETVIEW_PUBLIC_URL` | `https://fleetview.akulav.com` | Where people open the console (secure cookies, links). |
+| `FLEETVIEW_HTTP_HOST` / `_PORT` | `127.0.0.1` / `8080` | Console listener. Keep it on loopback behind a reverse proxy. |
+| `FLEETVIEW_HTTPS_CERT` / `_KEY` | — | Serve HTTPS from Node directly instead of a proxy. |
+| `FLEETVIEW_ADMIN_USER` | `admin` | Console user name. |
+| `FLEETVIEW_ADMIN_PASSWORD_HASH` | — | From `npm run hash-password`. |
+| `FLEETVIEW_AGENT_PORT` | `48620` | Agents' TLS channel (raw TCP: open/forward it to the master). |
+| `FLEETVIEW_AGENT_ADDRESS` | — | `host:port` baked into new agent installers, e.g. `fleetview.akulav.com:48620`. Empty = LAN discovery. |
+| `FLEETVIEW_DISCOVERY` | `true` | Answer agents' LAN broadcasts (UDP 48621). |
+| `FLEETVIEW_DATA_DIR` | `data` | Identity, PCs, jobs, uploaded installers, logs. **Back it up, keep it private.** |
+| `FLEETVIEW_EMANAGEMENT_URL` | — | e-Management URL for the agents' MoldSign signing bridge. |
+| `FLEETVIEW_MAX_UPLOAD_MB` | `2048` | Largest installer accepted. |
+| `FLEETVIEW_PARALLEL_TRANSFERS` | `4` | PCs receiving a file at the same time. |
+
+### Keep your existing fleet (moving from the desktop master)
+
+Agents trust the master's certificate and key, not its address. Import them and
+no PC needs reinstalling:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+npm run import-desktop-master -- "C:\Users\<you>\AppData\Roaming\FleetView"
 ```
 
-## 📚 Documentation
+This copies `master.settings.json` (the identity) and `known_agents.json` (the
+PCs and their pinned agent keys) into `data/`. Stop the desktop master first.
+If the new master is not on the PCs' LAN, select all computers → **Agent
+settings** → set the master address (e.g. `fleetview.akulav.com:48620`) *while
+the old master is still reachable*, or set `FLEETVIEW_AGENT_ADDRESS` before
+handing out new installers.
 
-- [docs/SETUP.md](docs/SETUP.md): installing the master and agents, step by step
-- [docs/SECURITY.md](docs/SECURITY.md): the trust model, what to keep secret, residual risks
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the crates, the protocol and how a command travels
-- [CHANGELOG.md](CHANGELOG.md): what changed in each version
+### Add computers
 
-## 🙏 Credits
+**Settings → Upload agent package** (`FleetViewAgent-x.y.z.exe` from a release,
+or `target\release\fleetview-agent.exe`), then **Download agent installer**.
+Run it on each PC (double-click, or `/S` for silent). The PC appears within
+seconds. Older agents show *update*; **Settings → Update n agents** updates them
+remotely.
 
-Built with [egui](https://github.com/emilk/egui), [tokio](https://tokio.rs) and [rustls](https://github.com/rustls/rustls).
-The master uses the system's Segoe UI on Windows.
+## 🌐 Deploy at fleetview.akulav.com
+
+Two ports matter:
+
+| Port | Who | Through the reverse proxy? |
+|---|---|---|
+| 443 → `127.0.0.1:8080` | people using the console | yes (HTTPS) |
+| **48620/tcp** | agents (pinned TLS, not HTTP) | **no**: open/forward it to the master directly |
+| 48621/udp | LAN discovery | only on the master's own LAN |
+
+1. Put the app in `/opt/fleetview/master` (or anywhere), create `.env` as above.
+2. Reverse proxy with automatic HTTPS: [`master/deploy/Caddyfile`](master/deploy/Caddyfile)
+   (or [`nginx.conf`](master/deploy/nginx.conf)). The proxy must not buffer
+   `/api/events` (live updates); both examples handle this.
+3. Run it as a service: [`master/deploy/fleetview-master.service`](master/deploy/fleetview-master.service)
+   (systemd). On Windows, run `node server.js` from Task Scheduler at startup
+   (or a service wrapper such as NSSM) in the `master` folder.
+4. Firewall: allow 443 (and 80 for the certificate) and **48620/tcp**.
+5. Health check: `GET /healthz`.
+
+If the master runs inside the institution's LAN, agents find it by broadcast and
+`FLEETVIEW_AGENT_ADDRESS` can stay empty. If it runs elsewhere (a VPS), set
+`FLEETVIEW_AGENT_ADDRESS=fleetview.akulav.com:48620` and point existing agents
+at it (see above).
+
+## 📦 Pushing software
+
+Click **Install software** (top right, or from a PC's page, or with PCs ticked).
+
+| Installer type (auto-detected) | Silent switches used |
+|---|---|
+| MSI | `msiexec /i file.msi /qn /norestart` (+ a verbose log) |
+| Inno Setup | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-` (+ `/LOG=`) |
+| NSIS | `/S` |
+| WiX bundle | `/quiet /norestart` |
+| InstallShield | `/s /v/qn` |
+| Advanced Installer | `/exenoui /qn /norestart` |
+| Unknown | none: type the vendor's switch (**Custom**) |
+
+Switches are editable per file and remembered. Quoted values work:
+`/D="C:\Program Files\App"`. The console shows the exact command line.
+
+- **Skip computers that already have it** is off by default, so an install
+  always runs (upgrades and repairs). Turn it on and type the program name;
+  each PC's program list is refreshed before the check.
+- `3010`/`1641` (restart needed) count as success. A failed install shows the
+  exit code, its meaning and the log tail. An installer that waits for a click
+  is killed after 60 min with its whole process tree.
+
+### Why pushed installers used to "never arrive"
+
+The desktop master pre-filled *skip if installed* with a name guessed from the
+file name (`MoldSignSetup-2.4.14.exe` → `moldsign`) and compared it with the
+PC's program list as last reported, which was only refreshed when the agent
+connected. Every PC with any MoldSign version (an upgrade), or where MoldSign
+had just been uninstalled, was marked *Skipped — already installed*, and the
+file was never sent. The same command run by hand worked because nothing was
+skipped. Now skipping is opt-in and uses a fresh list, and every PC's result
+says exactly what happened.
+
+## 🧪 Testing
+
+```bash
+cargo build -p fleetview-agent      # the agent the end-to-end test drives
+cd master
+npm test                            # unit: wire format vs. Rust bytes, detection, auth, …
+npm run test:e2e                    # real agent ↔ master: push, run, report
+```
+
+The end-to-end test starts a master, provisions the real Rust agent (in
+`console` mode, with its own data folder) exactly like a downloaded installer,
+and pushes a compiled stand-in installer through the HTTP API. It checks a
+silent run with its result, wrong switches failing with a reason, an offline
+PC getting the install when it connects, a 40 MB file streaming with flow
+control, and opt-in skipping. CI runs it on every push.
+
+**Manual check on a real PC** (e.g. MoldSign): upload `MoldSignSetup-x.exe`
+(detected as Inno Setup), choose one PC, click **Install on 1 computer**. The
+PC's tray icon switches to *installing* (amber arrow). The row goes *Sending →
+Installing → Done* with `ran: MoldSignSetup-x.exe /VERYSILENT /SUPPRESSMSGBOXES
+/NORESTART /SP-`, and the program appears under the PC's **Programs** tab. On
+failure, **Show details** has the Inno Setup log tail.
+
+## 🛠️ Building the agent
+
+Requires the Rust MSVC toolchain.
+
+```bash
+cargo build -p fleetview-agent --release     # target/release/fleetview-agent.exe
+node tools/make-icons.mjs                    # regenerate the icons (optional)
+```
+
+Releases: bump `[workspace.package] version` in `Cargo.toml`, push tag
+`vX.Y.Z`. The workflow tests everything and publishes
+`FleetViewAgent-X.Y.Z.exe` and `FleetViewMaster-X.Y.Z.zip`.
 
 ---
 

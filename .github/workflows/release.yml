@@ -52,22 +52,27 @@ jobs:
           $text = [System.Text.Encoding]::ASCII.GetString($bytes)
           if (-not $text.Contains($want)) { Write-Error "agent exe lacks $want"; exit 1 }
 
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-      # The master installer also carries the agent exe (its update package).
-      - name: Build master installer
-        working-directory: installer
+      - name: Test master
+        working-directory: master
+        env:
+          FLEETVIEW_AGENT_BIN: ${{ github.workspace }}\target\release\fleetview-agent.exe
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" master.iss
+          npm test
+          npm run test:e2e
 
       # The agent needs no installer: the exe installs and updates itself.
-      - name: Stage executables
+      # The master is a Node app: ship its folder (no data, no .env).
+      - name: Stage release files
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\release\fleetview-agent.exe  "dist\FleetViewAgent-${env:FLEETVIEW_VERSION}.exe"
-          Copy-Item target\release\fleetview-master.exe "dist\fleetview-master.exe"
+          Copy-Item target\release\fleetview-agent.exe "dist\FleetViewAgent-${env:FLEETVIEW_VERSION}.exe"
+          Compress-Archive -Path master\server.js, master\package.json, master\.env.example, master\src, master\public, master\scripts, master\deploy `
+            -DestinationPath "dist\FleetViewMaster-${env:FLEETVIEW_VERSION}.zip"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -75,6 +80,5 @@ jobs:
           name: FleetView ${{ steps.ver.outputs.version }}
           generate_release_notes: true
           files: |
-            dist/FleetViewMaster-Setup-*.exe
             dist/FleetViewAgent-*.exe
-            dist/fleetview-master.exe
+            dist/FleetViewMaster-*.zip

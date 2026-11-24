@@ -86,6 +86,9 @@ fn main() {
         "uninstall" => std::process::exit(setup::run_uninstall(rest)),
         "console" => {
             // Foreground run for debugging (Ctrl-C to stop).
+            if let Some(dir) = std::env::var_os("FLEETVIEW_DATA_DIR").filter(|d| !d.is_empty()) {
+                paths::use_console_data_dir(std::path::PathBuf::from(dir));
+            }
             service::init_logging("console");
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
             let shutdown = service::shutdown_token();

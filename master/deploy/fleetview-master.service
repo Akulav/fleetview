@@ -1,0 +1,22 @@
+# systemd unit for the FleetView master (Linux).
+#   sudo cp fleetview-master.service /etc/systemd/system/
+#   sudo systemctl enable --now fleetview-master
+[Unit]
+Description=FleetView master
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=fleetview
+WorkingDirectory=/opt/fleetview/master
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+# Settings come from /opt/fleetview/master/.env
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/fleetview/master/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

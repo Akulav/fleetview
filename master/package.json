@@ -1,0 +1,19 @@
+{
+  "name": "fleetview-master",
+  "version": "1.0.0",
+  "description": "FleetView master: web console + agent server for managing Windows PCs. Made by Akulav.",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "private": true,
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/unit.test.js",
+    "test:e2e": "node --test test/e2e.test.js",
+    "hash-password": "node scripts/hash-password.js",
+    "import-desktop-master": "node scripts/import-desktop-master.js"
+  }
+}

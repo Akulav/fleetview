@@ -2,50 +2,53 @@
 
 ## 1. Prerequisites
 
-- **Master PC:** any Windows 10/11 machine you keep on while managing the fleet.
+- **Master:** any machine with **Node.js 20+** that the PCs can reach on TCP
+  48620 (Linux VPS, a Windows server, or a PC on the LAN). The console is
+  served at `FLEETVIEW_PUBLIC_URL` (default https://fleetview.akulav.com).
 - **Agent PCs:** Windows 10/11, you have local admin to install once.
-- **Network:** a single LAN/subnet works out of the box (UDP broadcast). For
-  multiple subnets, see [Multi-subnet](#multi-subnet).
-- **To build from source:** Rust (MSVC toolchain); [Inno Setup 6](https://jrsoftware.org/isdl.php) only for the master installer.
+- **Network:** on one LAN the agents find the master by UDP broadcast. Anywhere
+  else, give them a fixed address (`FLEETVIEW_AGENT_ADDRESS`), see
+  [Multi-subnet](#multi-subnet).
+- **To build the agent from source:** Rust (MSVC toolchain).
 
-## 2. Build the binaries
+## 2. Run the master
+
+See the [README](../README.md#-master-setup): copy `master/.env.example` to
+`.env`, set a password hash (`npm run hash-password`), `npm start`. Put it
+behind HTTPS with `master/deploy/Caddyfile` or `nginx.conf`.
+
+On first start it creates in its data folder (`master/data` by default):
+
+- `master.settings.json`: an Ed25519 **identity key** (signs discovery
+  beacons), a self-signed **TLS certificate** for the agent channel, and a
+  random **enrollment secret**. Agents pin these, so **back this file up**;
+  losing it means reinstalling every agent.
+- `agents.json` (PCs and their pinned agent keys), `jobs.json`,
+  `installers/` (uploaded files), `logs/`.
+
+Coming from the desktop (0.5) master? `npm run import-desktop-master --
+"%APPDATA%FleetView"` imports its identity and PCs; no agent is reinstalled.
+
+## 3. Build the agent
 
 ```bash
-cargo build --workspace --release
+cargo build -p fleetview-agent --release   # target/release/fleetview-agent.exe
 ```
-
-Produces `target/release/fleetview-master.exe` and `fleetview-agent.exe`.
 
 > On a fresh Windows box, install the toolchain with
 > `winget install Rustlang.Rustup` and the **“Desktop development with C++”**
 > workload (or VS Build Tools) so the MSVC linker is present.
 
-## 3. First run of the master
-
-Run `fleetview-master.exe`. On first launch it creates, under
-`%APPDATA%\FleetView`:
-
-- an Ed25519 **identity key** (signs discovery beacons),
-- a self-signed **TLS certificate** for the control channel,
-- a random **enrollment secret**.
-
-The window shows the listening status and an **Online / ever-seen** counter.
+Releases (`v*` tags) publish `FleetViewAgent-x.y.z.exe`.
 
 ## 4. Make the agent setup file
 
 The agent is **one exe** that installs itself, updates itself and runs as the
 service — there is no separate installer.
 
-In the master, click **“Agent installer”**:
-
-- *Fixed master address* — leave empty for **auto-discovery**, or set
-  `192.168.1.50:48620` to skip discovery and connect to a fixed host.
-- *e-Management URL* — optional; set it (e.g. `http://docs.ansc.local:3080`) to
-  turn on the **MoldSign signing bridge** for e-Management ANSC.
-
-Click **“Save agent setup (.exe)…”**. You get `FleetViewAgent-Setup-<version>.exe`:
-the agent package (the `fleetview-agent.exe` installed next to the master, or
-the one picked with *Choose agent exe…*) with this config embedded:
+In the console: **Settings → Upload agent package** (the agent exe), then
+**Download agent installer**. You get `FleetViewAgent-<version>.exe` with this
+config embedded:
 
 ```json
 {
@@ -54,24 +57,20 @@ the one picked with *Choose agent exe…*) with this config embedded:
   "enrollment_secret": "…",
   "master_address": null,
   "discovery_targets": [],
-  "telemetry_interval_secs": 30,
-  "emanagement_url": "http://docs.ansc.local:3080"
+  "telemetry_interval_secs": 30
 }
 ```
 
-Keep that file private: it contains the enrollment secret. (The plain JSON can
-still be copied or saved; a plain `fleetview-agent.exe` with
-`agent.config.json` next to it works too.)
+`master_address` comes from `FLEETVIEW_AGENT_ADDRESS` (null = discovery) and
+`emanagement_url` from `FLEETVIEW_EMANAGEMENT_URL` (turns on the MoldSign
+signing bridge). Keep the file private: it contains the enrollment secret.
 
-## 5. Build from source / release
+## 5. Running the agent for development
 
-```powershell
-cargo build --workspace --release
-cd installer
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" master.iss   # master installer, bundles the agent exe
-```
-
-CI does this on a `v*` tag (see [Versioning](#versioning)).
+`fleetview-agent console` runs the service worker in the foreground. With
+`FLEETVIEW_DATA_DIR=<folder>` it uses that folder (config, staging, logs)
+instead of `C:ProgramDataFleetView` and leaves its permissions alone, so it
+can run unelevated next to an installed agent; the end-to-end test uses this.
 
 ## 6. Install on an agent PC
 
@@ -98,76 +97,58 @@ The agent discovers the master and appears in the master's list within a few
 seconds.
 ## 7. Daily use
 
-- **Telemetry / disks** — select a PC → *Overview*.
-- **Install software** — *Software* tab → *Install file…*, pick the installer,
-  set the **silent args** (e.g. `/S` for NSIS, `/qn` for MSI, `/quiet` for many
-  others), and it runs as SYSTEM on the agent. *Install from URL* downloads then
-  runs it.
-- **Uninstall** — *Software* tab → *Uninstall* next to an entry (best-effort
-  silent; some apps still show UI in session 0).
-- **PowerShell** — *PowerShell* tab, optionally *Run on ALL online agents*.
-- **Screen** — *Screen* tab → *Capture once* or *Start live view*. The user is
-  notified for every screenshot and when live view begins, and while the screen
-  is being viewed a **red frame and a watermark bar** are shown across their
-  desktop (click-through, so it doesn't get in the way) — remote viewing is
-  deliberately impossible to miss.
-- **Fleet actions** (Fleet overview) — push one installer or an https URL to
-  **every online PC** at once (same silent args), and open **Remote config**.
-- **Remote config** — change a few agent settings on running PCs without
-  reinstalling: `emanagement_url` (the MoldSign bridge), `master_address`,
-  `discovery_targets`, `telemetry_interval_secs`, `moldsign_path`. Tick a key,
-  set its value (empty clears it), choose *All online* or *Selected PC*, Apply.
-  The agent applies only these keys — never its master identity or enrollment
-  secret — and restarts to pick them up. If a `master_address` stops working
-  (master moved, or a typo), the agent starts alternating it with UDP discovery
-  after 3 failed attempts, so a PC on the master's subnet finds it again; one on
-  another subnet needs a correct address or `discovery_targets` (see
-  [Multi-subnet](#multi-subnet)).
+Everything is a click away from the **Computers** list: tick PCs for bulk
+actions (bar at the bottom), or click a PC for its page.
 
-User notifications are shown as FleetView toasts in the bottom-right corner (not
-system message boxes), so they appear above other windows without stealing focus.
+- **Install software** (top right, a PC's page, or the selection bar): drop an
+  `.exe`/`.msi` or reuse an uploaded one, check the detected silent switches,
+  pick *this PC / selected / all online / all*, Install. Each PC's progress and
+  result (exit code, meaning, command line, log tail) appears live under
+  **Activity**; *Retry n not done* re-runs failures and skipped PCs. See the
+  README for the switches per installer type.
+- **Programs** tab: installed programs, *Uninstall* (best-effort silent; some
+  apps still show UI in session 0).
+- **Accounts** tab: local accounts (enabled, administrator, last logon,
+  password age). Rename, set a password, enable/disable, add/remove from
+  Administrators, create, delete. The selection bar's **Accounts** does the same
+  for one user name on many PCs at once (e.g. set `itadmin`'s password
+  everywhere). Passwords are not kept in the job history; a PC's last enabled
+  administrator can't be disabled, demoted or deleted.
+- **Run PowerShell** (as SYSTEM, output in Activity), **Message** (a toast for
+  the logged-in user), **Screenshot** (the user is notified and sees a red frame).
+- **Agent settings** (selection bar): change where agents look for the master
+  (`master_address`). The agent restarts to apply it; if the address stops
+  working it alternates with UDP discovery after 3 failed attempts.
 
-### Silent-install switches (cheat sheet)
+The PC's tray icon shows the agent's state: blue with a green check =
+connected, grey = searching for the master, amber arrow = installing pushed
+software, red eye = the screen is being viewed.
 
-| Installer type | Silent switch |
-|----------------|---------------|
-| NSIS | `/S` |
-| Inno Setup | `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` |
-| MSI (check **MSI**) | `/qn /norestart` |
-| InstallShield | `/s /v"/qn"` |
-| Many others | `/quiet` or `/silent` |
-
-If a vendor installer has **no** silent mode (the MSign case), wrap it: extract it
-with `7z`, deploy the payload with a PowerShell script, or repackage it as an MSI
-with a tool like *MSI Wrapper* / *PSADT*, then push that.
+If a vendor installer has **no** silent mode, wrap it: extract it with `7z`,
+deploy the payload with a PowerShell script, or repackage it as an MSI, then
+push that.
 
 ## 8. Updating agents remotely
 
-The master compares each agent's version with its **agent package** (the
-`fleetview-agent.exe` next to the master — the master installer puts the
-matching one there — or any exe picked with *Choose agent exe…*):
+Upload the new agent exe under **Settings → Agent package**. PCs on an older
+version are marked *update* and **Settings → Update n agents** updates them
+(offline ones when they connect).
 
-- the *Fleet overview* shows an **Agent** column; older agents are marked ⬆;
-- **“⬆ Update N outdated online PC(s)”** (with a confirmation) updates them all,
-  4 at a time; a PC's *Overview* tab has **“⬆ Update to x.y.z”** for one PC.
-
-The update is an ordinary file push run with `update`, so it also works for
-agents still on 0.1.0. On the PC the pushed exe hands off to a detached worker
-and returns at once; the worker stops the service, swaps the exe and starts
-the new version, rolling back to the previous exe if it doesn't come up. The
-master shows the progress per PC and logs “agent updated a → b” when the PC
-reconnects with the new version. If an *e-Management URL* is set, the update
-also writes it to the agent config (turning on the MoldSign bridge).
-Downgrades are never offered. The worker logs to
-`C:\ProgramData\FleetView\logs\update.log*`.
+The update is an ordinary file push run with `update`. On the PC the pushed
+exe hands off to a detached worker and returns at once; the worker stops the
+service, swaps the exe and starts the new version, rolling back to the previous
+exe if it doesn't come up. The new version shows in the list when the PC
+reconnects. If `FLEETVIEW_EMANAGEMENT_URL` is set, the update also writes it
+to the agent config (turning on the MoldSign bridge). Downgrades are never
+offered. The worker logs to `C:\ProgramData\FleetView\logs\update.log*`.
 
 ## <a name="versioning"></a>9. Versioning
 
-- There is **one version** for master and agent: `[workspace.package] version`
-  in the root `Cargo.toml` (semver `major.minor.patch`).
-- It is compiled into both exes, shown in the master's title bar, reported by
-  every agent, and embedded in the agent exe as `FLEETVIEW_AGENT_VERSION=x.y.z`
-  so the master can read a file's version without running it.
+- The **agent version** is `[workspace.package] version` in the root
+  `Cargo.toml` (semver `major.minor.patch`). It is reported by every agent and
+  embedded in the agent exe as `FLEETVIEW_AGENT_VERSION=x.y.z` so the master
+  can read a file's version without running it. The master's own version is in
+  `master/package.json` (shown under Settings).
 - To release: bump the version in `Cargo.toml`, commit, then tag the same
   version. The release workflow refuses a tag that doesn't match.
 
@@ -176,10 +157,10 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-  The release contains `FleetViewMaster-Setup-x.y.z.exe` (with the agent
-  package), `FleetViewAgent-x.y.z.exe` and `fleetview-master.exe`.
-- Upgrade the master first; its new agent package then flags every older agent
-  as outdated.
+  The release contains `FleetViewAgent-x.y.z.exe` and
+  `FleetViewMaster-x.y.z.zip` (the master folder, without data or `.env`).
+- Upgrade the master first, then upload the new agent package; it flags every
+  older agent as outdated.
 
 ## <a name="multi-subnet"></a>Multi-subnet networks
 
@@ -194,12 +175,13 @@ master, either:
 
 | Port | Proto | Purpose |
 |------|-------|---------|
-| 48620 | TCP | Master control channel (TLS). Open inbound on the master. |
-| 48621 | UDP | Discovery. |
+| 48620 | TCP | Agent channel (pinned TLS, not HTTP). Open inbound on the master; it can't go through the web proxy. |
+| 48621 | UDP | LAN discovery. |
+| 443 (→ 8080) | TCP | Web console, through the HTTPS reverse proxy. |
 
 Agents dial **out** to the master, so agent PCs need no inbound rules.
 
 ## Uninstall
 
 - Agent: *Apps & features* → *FleetView Agent*, or `fleetview-agent.exe uninstall` (`--silent` for scripts). Removes the service, the program and the config; `audit.log`, `logs` and `agent.id` stay.
-- Master: *Apps & features* → *FleetView Master*.
+- Master: stop its service and delete its folder (keep a backup of `data/`).

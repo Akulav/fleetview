@@ -267,6 +267,9 @@ async fn run_session(
     let mut telemetry_tick =
         tokio::time::interval(Duration::from_secs(cfg.telemetry_interval_secs.max(5)));
     let mut heartbeat_tick = tokio::time::interval(Duration::from_secs(20));
+    // Mirror "an installer is running" to the tray icon.
+    let mut busy_tick = tokio::time::interval(Duration::from_secs(1));
+    let mut busy_shown = false;
 
     // Send an immediate telemetry snapshot.
     spawn_telemetry(hub.clone(), tx_out.clone());
@@ -289,6 +292,14 @@ async fn run_session(
 
             _ = heartbeat_tick.tick() => {
                 framed.send(encode(&AgentMsg::Heartbeat)?).await?;
+            }
+
+            _ = busy_tick.tick() => {
+                let busy = crate::commands::installs_running();
+                if busy != busy_shown {
+                    busy_shown = busy;
+                    hub.send_to_helper(HelperCommand::Busy(busy));
+                }
             }
 
             evt = helper_rx.recv() => {

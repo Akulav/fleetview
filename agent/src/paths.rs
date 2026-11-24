@@ -7,7 +7,22 @@
 
 use std::path::PathBuf;
 
+/// Data folder override for `console` (foreground debug) runs only — see
+/// [`use_console_data_dir`]. The service never sets it.
+static CONSOLE_DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// `fleetview-agent console` with `FLEETVIEW_DATA_DIR` set keeps its config,
+/// staging and logs in that folder and leaves its ACL alone, so a developer
+/// (or the end-to-end test) can run a second, unprivileged agent next to an
+/// installed one. Only `main` calls this, and only in console mode.
+pub fn use_console_data_dir(dir: PathBuf) {
+    let _ = CONSOLE_DATA_DIR.set(dir);
+}
+
 pub fn data_dir() -> PathBuf {
+    if let Some(d) = CONSOLE_DATA_DIR.get() {
+        return d.clone();
+    }
     // %ProgramData% is typically C:\ProgramData.
     let base = std::env::var_os("ProgramData")
         .map(PathBuf::from)
@@ -43,6 +58,9 @@ pub fn ensure_data_dir() -> std::io::Result<PathBuf> {
 /// somewhere they control. So ownership is taken by Administrators, and
 /// reparse points are deleted (never followed) before anything recursive runs.
 pub fn lock_down_data_dir() {
+    if CONSOLE_DATA_DIR.get().is_some() {
+        return; // a developer's own folder: leave its ACL alone
+    }
     let dir = data_dir();
     if is_reparse_point(&dir) {
         tracing::warn!("{} is a link; replacing it with a folder", dir.display());

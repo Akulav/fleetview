@@ -43,6 +43,9 @@ pub enum HelperCommand {
         connected: bool,
         master_name: String,
     },
+    /// A pushed installer started (true) or the last one finished (false);
+    /// the tray shows its "busy" icon meanwhile.
+    Busy(bool),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

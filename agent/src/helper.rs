@@ -37,6 +37,8 @@ enum UiMsg {
     },
     /// Live screen view started/stopped — reflected in the tray tooltip.
     Viewing(bool),
+    /// A pushed installer is running — reflected in the tray icon.
+    Busy(bool),
 }
 
 pub fn run() {
@@ -303,6 +305,9 @@ async fn ipc_session(port: u16, token: &str, ui_tx: &mpsc::Sender<UiMsg>) -> any
                     HelperCommand::Status { connected, master_name } => {
                         let _ = ui_tx.send(UiMsg::Status { connected, master: master_name });
                     }
+                    HelperCommand::Busy(b) => {
+                        let _ = ui_tx.send(UiMsg::Busy(b));
+                    }
                 }
             }
             else => break,
@@ -369,13 +374,13 @@ fn tray_loop(ui_rx: mpsc::Receiver<UiMsg>) {
     // Right after logon the taskbar may not exist yet and creating the tray
     // icon fails. Retry instead of exiting: an exit makes the service relaunch
     // us every few seconds, flashing the splash each time.
-    let icon = load_tray_icon();
+    let icons = TrayIcons::load();
     let tray = loop {
         let builder = TrayIconBuilder::new()
             .with_tooltip(s.tooltip_searching)
             .with_menu(Box::new(menu.clone()));
-        let builder = match &icon {
-            Some(icon) => builder.with_icon(icon.clone()),
+        let builder = match icons.get(TrayState::Offline) {
+            Some(icon) => builder.with_icon(icon),
             None => builder,
         };
         match builder.build() {
@@ -392,6 +397,8 @@ fn tray_loop(ui_rx: mpsc::Receiver<UiMsg>) {
     let mut connected = false;
     let mut master = String::new();
     let mut viewing = false;
+    let mut busy = false;
+    let mut shown = TrayState::Offline;
 
     loop {
         // Pump Win32 messages so the tray icon works.
@@ -424,24 +431,45 @@ fn tray_loop(ui_rx: mpsc::Receiver<UiMsg>) {
                     viewing = v;
                     changed = true;
                 }
+                UiMsg::Busy(b) => {
+                    busy = b;
+                    changed = true;
+                }
             }
         }
         if changed {
             let s = tray_i18n::strings(TRAY_LANG);
-            let tip = if viewing {
-                s.tooltip_viewing.to_string()
+            // Most important first: the user must always see a screen view.
+            let state = if viewing {
+                TrayState::Viewing
+            } else if busy {
+                TrayState::Busy
             } else if connected {
-                format!("{} {}", s.tooltip_connected, master)
+                TrayState::Connected
             } else {
-                s.tooltip_searching.to_string()
+                TrayState::Offline
             };
-            let status = if connected {
+            let tip = match state {
+                TrayState::Viewing => s.tooltip_viewing.to_string(),
+                TrayState::Busy => s.tooltip_installing.to_string(),
+                TrayState::Connected => format!("{} {}", s.tooltip_connected, master),
+                TrayState::Offline => s.tooltip_searching.to_string(),
+            };
+            let status = if busy {
+                s.menu_status_installing
+            } else if connected {
                 s.menu_status_connected
             } else {
                 s.menu_status_searching
             };
             let _ = tray.set_tooltip(Some(tip));
             status_item.set_text(status);
+            if state != shown {
+                if let Some(icon) = icons.get(state) {
+                    let _ = tray.set_icon(Some(icon));
+                }
+                shown = state;
+            }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(80));
@@ -458,12 +486,81 @@ fn pump_messages() {
     }
 }
 
-fn load_tray_icon() -> Option<tray_icon::Icon> {
-    let img = image::load_from_memory(include_bytes!("../../installer/assets/tray.png"))
-        .ok()?
-        .to_rgba8();
-    let (w, h) = (img.width(), img.height());
-    tray_icon::Icon::from_rgba(img.into_raw(), w, h).ok()
+/// What the tray icon shows (see `installer/assets/tray-*.ico`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrayState {
+    Connected,
+    Offline,
+    Busy,
+    Viewing,
+}
+
+impl TrayState {
+    /// Icon resource id, matching `agent/build.rs`.
+    fn resource_id(self) -> u16 {
+        match self {
+            TrayState::Connected => 101,
+            TrayState::Offline => 102,
+            TrayState::Busy => 103,
+            TrayState::Viewing => 104,
+        }
+    }
+}
+
+/// The tray icons, loaded once from the exe's multi-size .ico resources at the
+/// exact small-icon size for the screen's DPI (16 px at 100 %, 20 at 125 %,
+/// 24 at 150 %, 32 at 200 %), so Windows never has to rescale them.
+struct TrayIcons([Option<tray_icon::Icon>; 4]);
+
+impl TrayIcons {
+    fn load() -> Self {
+        let px = small_icon_px();
+        let load = |st: TrayState| {
+            tray_icon::Icon::from_resource(st.resource_id(), Some((px, px)))
+                .map_err(|e| tracing::warn!("tray icon {}: {e}", st.resource_id()))
+                .ok()
+        };
+        Self([
+            load(TrayState::Connected),
+            load(TrayState::Offline),
+            load(TrayState::Busy),
+            load(TrayState::Viewing),
+        ])
+    }
+
+    fn get(&self, st: TrayState) -> Option<tray_icon::Icon> {
+        let i = match st {
+            TrayState::Connected => 0,
+            TrayState::Offline => 1,
+            TrayState::Busy => 2,
+            TrayState::Viewing => 3,
+        };
+        self.0[i].clone()
+    }
+}
+
+/// Small-icon size in physical pixels for the system DPI. The helper itself is
+/// not DPI-aware (the splash and overlay are laid out in logical pixels), so
+/// the real DPI is read on a briefly DPI-aware thread context.
+fn small_icon_px() -> u32 {
+    use windows::Win32::UI::HiDpi::{
+        GetDpiForSystem, GetSystemMetricsForDpi, SetThreadDpiAwarenessContext,
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
+    unsafe {
+        let old = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let dpi = GetDpiForSystem();
+        let px = GetSystemMetricsForDpi(SM_CXSMICON, dpi);
+        if !old.is_invalid() {
+            SetThreadDpiAwarenessContext(old);
+        }
+        if px > 0 {
+            px as u32
+        } else {
+            16
+        }
+    }
 }
 
 fn show_message_box(title: &str, body: &str) {

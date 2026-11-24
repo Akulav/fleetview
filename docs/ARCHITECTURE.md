@@ -4,8 +4,8 @@
 
 ```
                          ┌─────────────────────────────┐
-                         │          MASTER PC          │
-                         │  fleetview-master.exe (egui)│
+                         │           MASTER            │
+                         │  node server.js  (+ HTTPS)  │
                          │  ┌───────────────────────┐  │
    UDP 48621 (signed)    │  │ discovery responder   │  │
  ◄───────────────────────┼──┤ TLS server :48620     │  │
@@ -38,8 +38,30 @@ rules; only the master exposes a port.
     fingerprinting, enrollment-secret comparison.
   - `discovery` — the `DiscoveryQuery` / signed `DiscoveryBeacon` format.
 - **`agent`** — see below.
-- **`master`** — `egui`/`eframe` UI + a background `tokio` runtime hosting the TLS
-  server and discovery responder; shared state behind a `Mutex`.
+- **`master`** — Node.js (no dependencies). `src/agents.js` is the TLS server
+  and agent registry (same framing and MessagePack encoding as the Rust side,
+  checked byte-for-byte by the unit tests), `src/discovery.js` the signed UDP
+  responder, `src/jobs.js` the job engine (per-PC install queue, streamed file
+  transfers with flow control, results matched by command id, offline PCs
+  served when they reconnect), `src/web.js` the console API + server-sent
+  events, `public/` the console UI.
+
+## How an install travels
+
+1. The admin uploads the installer (HTTP PUT, streamed to `data/installers/`);
+   the master detects its type and proposes the silent switches.
+2. `POST /api/jobs` creates one target per PC. Offline PCs wait (optional).
+3. For each online PC (one install at a time per PC, a few PCs at once), the
+   master sends `FileBegin` with a `RunSpec` (command id, args, msi flag), then
+   256 KiB `FileChunk`s, never more than 8 MiB ahead of the agent's
+   `FileAck`s, then `FileEnd`.
+4. The agent stages the file in `ProgramData\FleetView\staging\<random>`,
+   checks the length, and runs it (`msiexec /i` for MSI) with no window, one
+   installer at a time, killing the process tree after 60 min. MSI and Inno
+   Setup runs write a log.
+5. The agent answers with a `CommandResult` (exit code, the command line that
+   ran, the log tail on failure). The master maps the exit code (0, 3010, 1641
+   = success) and refreshes the PC's program list.
 
 ## Agent process model
 
@@ -107,8 +129,10 @@ A fixed `master_address` in the agent config skips discovery entirely.
 
 | Location | Contents |
 |----------|----------|
-| Master `%APPDATA%\FleetView\master.settings.json` | identity key, TLS cert/key, enrollment secret |
-| Master `%APPDATA%\FleetView\known_agents.json` | every agent ever seen (for the ever-seen metric) |
+| Master `data/master.settings.json` | identity key, TLS cert/key, enrollment secret |
+| Master `data/agents.json` | every PC ever seen, its pinned agent-key hash, last telemetry and programs |
+| Master `data/jobs.json`, `data/installers/` | action history (no passwords), uploaded installers |
+| Master `data/console.secrets.json` | generated console password hash / session key (when not set in `.env`) |
 | Agent `%ProgramData%\FleetView\agent.config.json` | pinned master identity (ACL: SYSTEM+Admins) |
 | Agent `%ProgramData%\FleetView\audit.log` | every remotely-run command |
 | Agent `%ProgramData%\FleetView\logs\` | service logs |

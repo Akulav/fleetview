@@ -1,0 +1,13 @@
+# Caddy in front of the FleetView console: automatic HTTPS for the domain.
+# Agents do NOT go through here — they connect straight to TCP 48620.
+fleetview.akulav.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8080 {
+		# Server-sent events (live updates) must not be buffered.
+		flush_interval -1
+	}
+	request_body {
+		# Installer uploads (keep in line with FLEETVIEW_MAX_UPLOAD_MB).
+		max_size 2GB
+	}
+}

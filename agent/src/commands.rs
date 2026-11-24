@@ -20,7 +20,9 @@ use crate::paths;
 
 /// Hard limit for a PowerShell script run. A script that waits for input or
 /// hangs would otherwise block forever (session 0 has no UI to answer it).
-const PS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Long enough for maintenance tasks pushed from the master (installing
+/// Windows updates, DISM /RestoreHealth, sfc /scannow can each take an hour).
+const PS_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
 /// Hard limit for an installer / pushed file run.
 const RUN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// Max bytes of stdout / stderr sent back. Larger output would exceed the
@@ -155,6 +157,55 @@ async fn download(url: reqwest::Url, dest: &Path) -> anyhow::Result<()> {
 /// a fleet push of several packages queues here instead of failing.
 static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Installers running right now (0 or 1 because of [`INSTALL_LOCK`]); the
+/// tray shows its "busy" icon while this is non-zero.
+static ACTIVE_INSTALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn installs_running() -> bool {
+    ACTIVE_INSTALLS.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
+struct BusyGuard;
+
+impl BusyGuard {
+    fn new() -> Self {
+        ACTIVE_INSTALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        BusyGuard
+    }
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        ACTIVE_INSTALLS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Whether `args` are Inno Setup silent switches (so `/LOG=` can be added).
+fn is_inno_silent(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        let a = a.to_ascii_uppercase();
+        a == "/VERYSILENT" || a == "/SILENT"
+    }) && !args
+        .iter()
+        .any(|a| a.to_ascii_uppercase().starts_with("/LOG"))
+}
+
+/// The command line as it is run, for the result shown on the master.
+fn describe(program: &str, args: &[String]) -> String {
+    let mut s = program.to_string();
+    for a in args {
+        s.push(' ');
+        if a.contains(' ') {
+            s.push('"');
+            s.push_str(a);
+            s.push('"');
+        } else {
+            s.push_str(a);
+        }
+    }
+    s
+}
+
 /// Execute a file per its [`RunSpec`].
 pub async fn run_file(path: &Path, run: &RunSpec) -> CommandResult {
     audit(&format!(
@@ -173,24 +224,55 @@ pub async fn run_file(path: &Path, run: &RunSpec) -> CommandResult {
     }
 
     let _queue = INSTALL_LOCK.lock().await;
-    let log_path = path.with_extension("install.log");
-    let cmd = if run.is_msi {
-        let mut c = Command::new("msiexec.exe");
-        c.arg("/i").arg(path);
-        c.args(&run.args);
+    let _busy = BusyGuard::new();
+    // A fixed name in the job's own folder: the installer's file name may have
+    // spaces, which installer command-line parsers handle inconsistently.
+    let log_path = path
+        .parent()
+        .map(|d| d.join("fleetview-install.log"))
+        .unwrap_or_else(|| path.with_extension("install.log"));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut log_label = None;
+    let (cmd, shown) = if run.is_msi {
+        let mut args = vec!["/i".to_string(), path.display().to_string()];
+        args.extend(run.args.iter().cloned());
         if !run.args.iter().any(|a| a.to_lowercase().starts_with("/l")) {
-            c.arg("/L*v").arg(&log_path);
+            args.push("/L*v".into());
+            args.push(log_path.display().to_string());
+            log_label = Some("MSI log");
         }
-        c
+        let mut c = Command::new("msiexec.exe");
+        c.args(&args);
+        let mut shown_args = vec!["/i".to_string(), file_name];
+        shown_args.extend(run.args.iter().cloned());
+        (c, describe("msiexec.exe", &shown_args))
     } else {
+        let mut args = run.args.clone();
+        // Inno Setup writes a detailed log on request; it is the only way to
+        // see why a silent install failed on the hidden session-0 desktop.
+        let log_str = log_path.display().to_string();
+        if is_inno_silent(&args) && !log_str.contains(' ') {
+            args.push(format!("/LOG={log_str}"));
+            log_label = Some("installer log");
+        }
         let mut c = Command::new(path);
-        c.args(&run.args);
-        c
+        c.args(&args);
+        // Some installers resolve their payload relative to the working folder.
+        if let Some(dir) = path.parent() {
+            c.current_dir(dir);
+        }
+        (c, describe(&file_name, &run.args))
     };
     let mut result = run_installer(&run.command_id, cmd, RUN_TIMEOUT).await;
-    if run.is_msi && !result.success {
-        if let Some(tail) = read_log_tail(&log_path, 40) {
-            result.stdout.push_str("\n--- end of the MSI log ---\n");
+    result.stdout = format!("ran: {shown}\n{}", result.stdout);
+    if !result.success {
+        if let (Some(label), Some(tail)) = (log_label, read_log_tail(&log_path, 40)) {
+            result
+                .stdout
+                .push_str(&format!("\n--- end of the {label} ---\n"));
             result.stdout.push_str(&tail);
         }
     }
@@ -229,14 +311,27 @@ async fn run_installer(command_id: &str, mut cmd: Command, timeout: Duration) ->
             }
         }
         Ok(Err(e)) => fail(command_id, &format!("wait: {e}")),
-        Err(_) => fail(
-            command_id,
-            &format!(
-                "timed out after {} min and was killed — the installer is probably waiting \
-                 for input on a hidden window: check its silent switches",
-                timeout.as_secs() / 60
-            ),
-        ),
+        Err(_) => {
+            // Installers usually hand the work to a child (Inno's setup.tmp,
+            // msiexec, an embedded MSI). Killing only the parent would leave
+            // the hung child running and blocking the next install.
+            if let Some(pid) = child.id() {
+                let _ = Command::new("taskkill.exe")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await;
+            }
+            fail(
+                command_id,
+                &format!(
+                    "timed out after {} min and was killed — the installer is probably waiting \
+                     for input on a hidden window: check its silent switches",
+                    timeout.as_secs() / 60
+                ),
+            )
+        }
     }
 }
 
@@ -497,6 +592,31 @@ mod tests {
         assert_eq!(sanitize("nul.exe"), "_nul.exe");
         assert_eq!(sanitize("COM1"), "_COM1");
         assert_eq!(sanitize("console.exe"), "console.exe");
+    }
+
+    #[test]
+    fn inno_log_only_for_inno_switches() {
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(is_inno_silent(&v(&[
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART"
+        ])));
+        assert!(is_inno_silent(&v(&["/silent"])));
+        assert!(!is_inno_silent(&v(&["/VERYSILENT", "/LOG=C:\\x.log"])));
+        assert!(!is_inno_silent(&v(&["/S"])));
+        assert!(!is_inno_silent(&v(&["/qn"])));
+    }
+
+    #[test]
+    fn describe_quotes_spaces() {
+        assert_eq!(
+            describe(
+                "setup.exe",
+                &["/S".into(), "/D=C:\\Program Files\\X".into()]
+            ),
+            "setup.exe /S \"/D=C:\\Program Files\\X\""
+        );
     }
 
     #[test]
