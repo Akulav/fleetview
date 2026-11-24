@@ -9,7 +9,6 @@ version = "0.6.0"
 edition = "2021"
 authors = ["Akulav"]
 license-file = "LICENSE"
-repository = "https://github.com/Akulav/fleet-manager"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

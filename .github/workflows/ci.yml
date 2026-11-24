@@ -30,8 +30,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets
 
+      # A check only (nothing is published): the master compiles the agent.
       - name: Build agent
-        run: cargo build --workspace --release
+        run: cargo build --workspace
 
       - name: Test agent
         run: cargo test --workspace
@@ -44,5 +45,5 @@ jobs:
       - name: Test master + agent (end-to-end)
         working-directory: master
         env:
-          FLEETVIEW_AGENT_BIN: ${{ github.workspace }}\target\release\fleetview-agent.exe
+          FLEETVIEW_AGENT_BIN: ${{ github.workspace }}\target\debug\fleetview-agent.exe
         run: npm run test:e2e

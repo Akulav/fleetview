@@ -16,7 +16,18 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
 - **New icons:** app icon and four tray states (connected, searching, installing, screen viewed), drawn per size
   for 16–48 px; the tray loads the exact size for the screen's DPI.
 
+- **Agents connect to the web address, not the LAN:** new installers point at the public URL
+  (`wss://fleetview.akulav.com/agent`, the agent's pinned TLS inside a WebSocket), so only HTTPS is needed and
+  Cloudflare can stay proxied. LAN discovery is off by default; port 48620 remains for older agents.
+- **The master compiles the agent itself** from the repository's sources (at start and whenever they change)
+  with its own address built in; Settings shows the build and offers the download. GitHub releases no longer
+  ship an agent exe.
+- Agents whose config has no master address (set up by the desktop master) use the built-in web address, and
+  keep trying LAN discovery while it doesn't answer, so updating them from the desktop master moves them over.
+
 ### Added
+- **Move PCs from the desktop master** in Settings: upload its `master.settings.json` (and `known_agents.json`)
+  and its agents trust this master, without shell access to the server.
 - **Maintenance tasks** for one PC or the fleet: Windows Update check/install, sfc /scannow, DISM RestoreHealth,
   Defender update + quick scan, temp cleanup, disk health, gpupdate, DNS flush, restart/shutdown with warning.
 - **Local accounts:** list per PC; rename, set password, enable/disable, add/remove administrator, create,

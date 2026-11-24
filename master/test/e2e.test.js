@@ -23,7 +23,7 @@ import { agentConfigJson } from "../src/identity.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const agentBin = process.env.FLEETVIEW_AGENT_BIN || resolve(here, "../../target/debug/fleetview-agent.exe");
-const skip = process.platform !== "win32" ? "Windows only" : !existsSync(agentBin) ? `no agent at ${agentBin} — run cargo build -p fleetview-agent` : false;
+const skip = process.platform !== "win32" ? "Windows only" : !existsSync(agentBin) ? `no agent at ${agentBin} â€” run cargo build -p fleetview-agent` : false;
 
 const work = mkdtempSync(join(tmpdir(), "fv-e2e-"));
 const PASSWORD = "e2e-password-1234";
@@ -99,6 +99,7 @@ before(async () => {
       adminUser: "admin",
       adminPassword: PASSWORD,
       adminPasswordHash: "",
+      agentBuild: false, // the test runs the agent exe it was given
     },
     { quiet: !process.env.E2E_VERBOSE },
   );
@@ -108,7 +109,9 @@ before(async () => {
   mkdirSync(join(work, "agent"), { recursive: true });
   writeFileSync(
     join(work, "agent", "agent.config.json"),
-    agentConfigJson(master.identity, { agentAddress: `127.0.0.1:${master.config.agentPort}` }),
+    // The default for new installers: the master's web address (WebSocket to
+    // <url>/agent, pinned TLS inside). Plain http here; https in production.
+    agentConfigJson(master.identity, { agentAddress: base }),
   );
   startAgent();
   agentId = await until("the agent to connect", () => master.hub.list().find((a) => a.conn)?.agent_id, 60_000);
@@ -226,4 +229,25 @@ test("a maintenance task runs and reports a summary", { skip }, async () => {
   assert.ok(["succeeded", "failed"].includes(t.state));
   assert.ok(t.message && t.message !== "done", t.message);
   assert.match(t.output, /GB/, t.output);
+});
+
+test("agents connect through the web address (WebSocket, pinned TLS inside)", { skip }, () => {
+  assert.match(master.hub.get(agentId).addr, /\(web\)$/);
+});
+
+test("the direct agent port still works (LAN setups, older agents)", { skip }, async () => {
+  stopAgent();
+  await until("the agent to go offline", () => !master.hub.isOnline(agentId), 30_000);
+  writeFileSync(
+    join(work, "agent", "agent.config.json"),
+    agentConfigJson(master.identity, { agentAddress: `127.0.0.1:${master.config.agentPort}` }),
+  );
+  startAgent();
+  await until("the agent to reconnect directly", () => master.hub.isOnline(agentId), 60_000);
+  assert.doesNotMatch(master.hub.get(agentId).addr, /\(web\)/);
+  const marker = join(work, "direct.txt");
+  const t = await finished(await runJob({ installer_id: installer.id, args: `/S /MARKER=${marker}`, is_msi: false }));
+  assert.equal(t.state, "succeeded", `${t.message}
+${t.output}`);
+  assert.ok(existsSync(marker));
 });

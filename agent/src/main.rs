@@ -42,6 +42,7 @@ mod splash;
 mod telemetry;
 mod tls;
 mod tray_i18n;
+mod wsconn;
 
 use std::ffi::OsString;
 

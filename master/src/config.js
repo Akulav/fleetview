@@ -49,13 +49,17 @@ export function loadConfig(env = process.env) {
     /** Trust X-Forwarded-* from the proxy. On by default when bound to loopback. */
     trustProxy: bool(env.FLEETVIEW_TRUST_PROXY, httpHost === "127.0.0.1" || httpHost === "::1" || httpHost === "localhost"),
 
-    /** The agents' TLS channel (raw TCP — not HTTP, cannot go through a web proxy). */
+    /** Optional direct agent port (raw pinned TLS): LAN setups and agents
+     * older than 0.6. 0 = off. Agents 0.6+ normally use the web address. */
     agentHost: env.FLEETVIEW_AGENT_HOST || "0.0.0.0",
-    agentPort: int(env.FLEETVIEW_AGENT_PORT, 48620),
-    /** host:port that new agent installers connect to. Empty = LAN discovery. */
-    agentAddress: (env.FLEETVIEW_AGENT_ADDRESS || "").trim(),
-    /** Answer agents' UDP broadcasts on the LAN (port 48621). */
-    discovery: bool(env.FLEETVIEW_DISCOVERY, true),
+    agentPort: /^(off|no|false)$/i.test(env.FLEETVIEW_AGENT_PORT ?? "") ? null : int(env.FLEETVIEW_AGENT_PORT, 48620),
+    /** Where new agent installers connect: by default the public URL (a
+     * WebSocket to <url>/agent, through the same HTTPS as the console).
+     * "host:port" uses the direct agent port; "discovery" = LAN broadcast. */
+    agentAddress: (env.FLEETVIEW_AGENT_ADDRESS || publicUrl).trim(),
+    /** Answer agents' UDP broadcasts on the LAN (port 48621). Only useful
+     * when the master shares a LAN with the PCs. */
+    discovery: bool(env.FLEETVIEW_DISCOVERY, false),
     discoveryPort: int(env.FLEETVIEW_DISCOVERY_PORT, 48621),
 
     /** Identity, PCs, jobs, uploads. On AutoNode: its DATA_DIR, which deploys never touch. */
@@ -75,6 +79,16 @@ export function loadConfig(env = process.env) {
     maxUploadMb: int(env.FLEETVIEW_MAX_UPLOAD_MB, 2048),
     /** Installs pushed to different PCs at the same time. */
     parallelTransfers: int(env.FLEETVIEW_PARALLEL_TRANSFERS, 4),
+
+    /** Compile the agent here from the repository's Rust sources (at start,
+     * and again whenever they change), with publicUrl as its built-in master. */
+    agentBuild: bool(env.FLEETVIEW_AGENT_BUILD, true),
+    /** Repository root holding agent/ and shared/ (default: next to master/). */
+    agentSourceDir: env.FLEETVIEW_AGENT_SOURCE || "",
+    /** Rust target; default native on Windows, x86_64-pc-windows-gnu elsewhere. */
+    agentTarget: env.FLEETVIEW_AGENT_TARGET || "",
+    /** Path to cargo (default ~/.cargo/bin/cargo, then PATH). */
+    cargo: env.FLEETVIEW_CARGO || "",
   };
   cfg.secureCookies = cfg.publicUrl.startsWith("https://");
   return cfg;

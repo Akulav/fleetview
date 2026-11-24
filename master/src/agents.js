@@ -127,6 +127,49 @@ export class AgentHub extends EventEmitter {
     this.emit("agent", a);
   }
 
+  /** Switch to another master identity (imported from the desktop master):
+   * new connections use it at once; current ones are dropped, since they were
+   * made with the old certificate. */
+  useIdentity(identity) {
+    Object.assign(this.identity, identity);
+    this.server?.setSecureContext({ cert: identity.certPem, key: identity.keyPem, minVersion: "TLSv1.2" });
+    for (const a of this.agents.values()) a.conn?.close();
+  }
+
+  /** Merge PCs from a desktop master's `known_agents.json` (their pinned
+   * agent keys included). Returns how many were imported. */
+  importKnown(known) {
+    if (!Array.isArray(known)) throw new Error("known_agents.json must be a list");
+    let n = 0;
+    for (const k of known) {
+      if (!k || typeof k.agent_id !== "string" || !k.agent_id) continue;
+      const cur = this.agents.get(k.agent_id);
+      this.agents.set(k.agent_id, {
+        online: false,
+        conn: null,
+        telemetry: null,
+        software: [],
+        ...cur,
+        agent_id: k.agent_id,
+        hostname: cur?.hostname ?? k.hostname ?? k.agent_id,
+        first_seen: cur?.first_seen ?? k.first_seen ?? null,
+        last_seen: cur?.last_seen ?? k.last_seen ?? null,
+        agent_version: cur?.agent_version || k.agent_version || "",
+        tags: cur?.tags?.length ? cur.tags : (k.tags ?? []),
+        notes: cur?.notes || k.notes || "",
+        ips: cur?.ips ?? k.ips ?? [],
+        macs: cur?.macs ?? k.macs ?? [],
+        os: cur?.os || k.os || "",
+        user: cur?.user ?? k.user ?? null,
+        key_hash: k.key_hash ?? cur?.key_hash ?? null,
+      });
+      n++;
+    }
+    this.save();
+    this.emit("agents");
+    return n;
+  }
+
   // ---- TLS server ------------------------------------------------------
 
   listen() {
@@ -158,10 +201,12 @@ export class AgentHub extends EventEmitter {
     this.file.flush();
   }
 
-  accept(socket) {
-    const peer = `${socket.remoteAddress}:${socket.remotePort}`.replace(/^::ffff:/, "");
+  /** A TLS connection from an agent: straight from the agent port, or a
+   * TLSSocket over a WebSocket (src/ws.js) with `peerName` from the proxy. */
+  accept(socket, peerName = null) {
+    const peer = peerName ?? `${socket.remoteAddress}:${socket.remotePort}`.replace(/^::ffff:/, "");
     const conn = new Connection(socket, peer);
-    socket.setNoDelay(true);
+    if (!peerName) socket.setNoDelay(true);
     let buf = Buffer.alloc(0);
     let maxFrame = PRE_AUTH_MAX_FRAME;
     let agentId = null;

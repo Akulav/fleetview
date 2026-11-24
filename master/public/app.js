@@ -171,6 +171,8 @@ function connectEvents() {
   });
   es.addEventListener("master", (e) => {
     S.master = JSON.parse(e.data);
+    const card = document.getElementById("agent-card");
+    if (card) fillAgentCard(card, card._pkgInput);
     schedule();
   });
   es.addEventListener("log", (e) => {
@@ -1233,13 +1235,13 @@ function openMessage(ids) {
 }
 
 function openAgentSettings(ids) {
-  const addr = h("input", { type: "text", placeholder: "e.g. fleetview.akulav.com:48620 — empty = LAN discovery", value: S.master?.agent_address ?? "" });
+  const addr = h("input", { type: "text", placeholder: "e.g. https://fleetview.akulav.com — empty = the agent's built-in address", value: S.master?.agent_address ?? "" });
   const d = {
     title: `Agent settings on ${targetLine(ids)}`,
     render() {
-      put(d.body, 
-        h("div", { class: "note info" }, "Changes where the agents look for this master. They restart and reconnect; a wrong address makes them fall back to LAN discovery."),
-        h("label", { class: "field" }, "Master address (host:port)"),
+      put(d.body,
+        h("div", { class: "note info" }, "Changes where the agents look for this master: a web address (https://…), host:port for the direct agent port, or \"discovery\" for LAN broadcast. They restart and reconnect."),
+        h("label", { class: "field" }, "Master address"),
         addr,
       );
       put(d.footer, h("button", { class: "btn primary big", onclick: () => createJob({ kind: "config", targets: ids, payload: { updates: [{ key: "master_address", value: addr.value.trim() }] } }) }, "Apply"));
@@ -1284,6 +1286,78 @@ function overallState(j) {
 }
 
 // ---------------------------------------------------------------- settings --
+
+/** "Add computers": the agent is compiled on this master (address built in). */
+function fillAgentCard(card, pkgInput) {
+  const m = S.master;
+  const pkg = m.agent_package;
+  const b = m.agent_build ?? { state: "unavailable" };
+  const building = b.state === "building";
+  const outdated = [...S.agents.values()].filter((a) => a.outdated);
+  const status = {
+    building: h("div", { class: "note info" }, `Compiling the agent for ${m.public_url}… (started ${ago(b.started_at)}; the first build takes a few minutes)`),
+    failed: h("div", { class: "note" }, h("b", {}, "The agent build failed: "), b.error ?? "unknown error"),
+    unavailable: h("div", { class: "note" }, "The agent's sources are not next to this master, so it can't be compiled here. Upload a built fleetview-agent.exe instead."),
+  }[b.state];
+  put(
+    card,
+    h("h3", {}, "Add computers"),
+    h("p", { class: "sub" }, "Run the agent installer on each PC (double-click, or ", h("code", {}, "/S"), " for silent). It installs a background service and a tray icon, and connects to ", h("b", {}, m.agent_address || m.public_url), "."),
+    pkg && !building
+      ? h("a", { class: "btn primary", href: "/api/agent-package/setup", download: true }, `Download agent installer ${pkg.version}`)
+      : null,
+    status,
+    building || (b.state === "failed" && b.log) ? h("pre", { class: "build-log mono" }, b.log || "starting cargo…") : null,
+    h(
+      "div",
+      { style: { marginTop: "10px", display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
+      b.state !== "unavailable"
+        ? h("button", { class: "btn small", disabled: building, onclick: () => api("POST", "/api/agent-package/build").then(() => toast("Agent build started")).catch(fail) }, pkg ? "Rebuild agent" : "Build agent")
+        : null,
+      b.state === "unavailable" || b.state === "failed" ? h("button", { class: "btn small ghost", onclick: () => pkgInput.click() }, "Upload a built agent…") : null,
+      pkgInput,
+      b.built_at && !building ? h("span", { class: "sub" }, `built ${ago(b.built_at)} (${b.target})`) : null,
+    ),
+    pkg && !building && outdated.length
+      ? h("div", { style: { marginTop: "16px" } }, h("p", { class: "sub" }, `${plural(outdated.length, "computer")} run an older agent.`), h("button", { class: "btn", onclick: () => createJob({ kind: "update", targets: outdated.map((a) => a.id), wait_offline: true }) }, `Update ${plural(outdated.length, "agent")} to ${pkg.version}`))
+      : null,
+  );
+  card._pkgInput = pkgInput;
+  const log = card.querySelector(".build-log");
+  if (log) requestAnimationFrame(() => (log.scrollTop = log.scrollHeight));
+  return card;
+}
+
+/** Bring over the desktop master's identity, so its agents trust this one. */
+function importCard() {
+  const settings = h("input", { type: "file", accept: ".json" });
+  const known = h("input", { type: "file", accept: ".json" });
+  const run = async () => {
+    const s = settings.files[0];
+    if (!s) return toast("Choose master.settings.json", true);
+    if (!confirm("Replace this master's identity with the desktop master's?\n\nPCs that were set up from this master's own installers will stop trusting it; PCs of the desktop master will connect here.")) return;
+    try {
+      const r = await api("POST", "/api/import-desktop-master", { settings: await s.text(), known: known.files[0] ? await known.files[0].text() : null });
+      toast(`Imported ${r.name}${r.pcs ? ` and ${plural(r.pcs, "PC")}` : ""}`);
+      await loadState();
+      go("settings");
+    } catch (e) {
+      fail(e);
+    }
+  };
+  return h(
+    "div",
+    { class: "card card-pad", style: { marginTop: "16px" } },
+    h("h3", {}, "Move PCs from the desktop master"),
+    h("p", { class: "sub" }, "Agents trust a master's certificate, not its address. Upload the old desktop master's files from ", h("code", {}, "%APPDATA%\\FleetView"), " and its PCs will connect here as soon as they run agent 0.6 (update them from the old master). Stop the desktop master afterwards."),
+    h("label", { class: "field" }, "master.settings.json (required)"),
+    settings,
+    h("label", { class: "field" }, "known_agents.json (optional: the PC list and their pinned keys)"),
+    known,
+    h("div", { style: { marginTop: "12px" } }, h("button", { class: "btn", onclick: run }, "Import")),
+  );
+}
+
 function renderSettings(main, full) {
   if (!full && main.dataset.view === "settings") return;
   main.dataset.view = "settings";
@@ -1314,19 +1388,7 @@ function renderSettings(main, full) {
     h(
       "div",
       { class: "grid2" },
-      h(
-        "div",
-        { class: "card card-pad" },
-        h("h3", {}, "Add computers"),
-        h("p", { class: "sub" }, "Run the agent installer on each PC (double-click, or ", h("code", {}, "/S"), " for silent). It installs a background service and a tray icon, and connects to this master."),
-        pkg
-          ? h("a", { class: "btn primary", href: "/api/agent-package/setup", download: true }, `Download agent installer ${pkg.version}`)
-          : h("div", { class: "note" }, "Upload fleetview-agent.exe (from a release or target\\release) to create installers."),
-        h("div", { style: { marginTop: "10px" } }, h("button", { class: "btn small", onclick: () => pkgInput.click() }, pkg ? "Replace agent package…" : "Upload agent package…"), pkgInput),
-        pkg && outdated.length
-          ? h("div", { style: { marginTop: "16px" } }, h("p", { class: "sub" }, `${plural(outdated.length, "computer")} run an older agent.`), h("button", { class: "btn", onclick: () => createJob({ kind: "update", targets: outdated.map((a) => a.id), wait_offline: true }) }, `Update ${plural(outdated.length, "agent")} to ${pkg.version}`))
-          : null,
-      ),
+      fillAgentCard(h("div", { class: "card card-pad", id: "agent-card" }), pkgInput),
       h(
         "div",
         { class: "card card-pad" },
@@ -1336,7 +1398,7 @@ function renderSettings(main, full) {
           { class: "kv" },
           h("span", {}, "Name"), h("b", {}, m.name),
           h("span", {}, "Console URL"), h("b", {}, m.public_url),
-          h("span", {}, "Agent port"), h("b", {}, `${m.agent_port} (TLS)`),
+          h("span", {}, "Direct agent port"), h("b", {}, m.agent_port ? `${m.agent_port} (TLS, agents before 0.6)` : "off"),
           h("span", {}, "Agents connect to"), h("b", {}, m.agent_address || "LAN discovery"),
           h("span", {}, "LAN discovery"), h("b", {}, m.discovery ? "on" : "off"),
           h("span", {}, "Certificate"), h("b", { class: "mono" }, m.fingerprint),
@@ -1345,6 +1407,7 @@ function renderSettings(main, full) {
         h("p", { class: "sub", style: { marginTop: "12px" } }, "These come from the master's .env file (see README)."),
       ),
     ),
+    importCard(),
     h(
       "div",
       { class: "card card-pad", style: { marginTop: "16px" } },

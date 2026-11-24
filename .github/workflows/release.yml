@@ -15,8 +15,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # One version for everything: `version` in the workspace Cargo.toml. The
-      # tag must match it, so the exe, the master's update check and the
-      # release name can never disagree.
+      # tag must match it, so the agent the master compiles, the master's update
+      # check and the release name can never disagree.
       - name: Check tag matches Cargo.toml version
         id: ver
         shell: pwsh
@@ -41,16 +41,10 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Build release binaries
-        run: cargo build --workspace --release
-
-      - name: Check the agent's embedded version
-        shell: pwsh
-        run: |
-          $want = "FLEETVIEW_AGENT_VERSION=${env:FLEETVIEW_VERSION}"
-          $bytes = [System.IO.File]::ReadAllBytes("target\release\fleetview-agent.exe")
-          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
-          if (-not $text.Contains($want)) { Write-Error "agent exe lacks $want"; exit 1 }
+      # Only for the end-to-end test. The agent is not published: the master
+      # compiles it on demand, with its own web address built in.
+      - name: Build the agent for the tests
+        run: cargo build --workspace
 
       - uses: actions/setup-node@v4
         with:
@@ -59,20 +53,19 @@ jobs:
       - name: Test master
         working-directory: master
         env:
-          FLEETVIEW_AGENT_BIN: ${{ github.workspace }}\target\release\fleetview-agent.exe
+          FLEETVIEW_AGENT_BIN: ${{ github.workspace }}\target\debug\fleetview-agent.exe
         run: |
           npm test
           npm run test:e2e
 
-      # The agent needs no installer: the exe installs and updates itself.
-      # The master is a Node app: ship its folder (no data, no .env).
+      # The master with the agent's sources, which it compiles itself
+      # (no data, no .env, no prebuilt agent).
       - name: Stage release files
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\release\fleetview-agent.exe "dist\FleetViewAgent-${env:FLEETVIEW_VERSION}.exe"
-          Compress-Archive -Path master\server.js, master\package.json, master\.env.example, master\src, master\public, master\scripts, master\deploy `
-            -DestinationPath "dist\FleetViewMaster-${env:FLEETVIEW_VERSION}.zip"
+          Compress-Archive -Path package.json, Cargo.toml, Cargo.lock, LICENSE, master, agent, shared, installer `
+            -DestinationPath "dist\FleetView-${env:FLEETVIEW_VERSION}.zip"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -80,5 +73,4 @@ jobs:
           name: FleetView ${{ steps.ver.outputs.version }}
           generate_release_notes: true
           files: |
-            dist/FleetViewAgent-*.exe
-            dist/FleetViewMaster-*.zip
+            dist/FleetView-*.zip

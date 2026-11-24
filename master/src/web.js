@@ -9,8 +9,9 @@ import { APP_ROOT } from "./config.js";
 import { PRESETS, WARNINGS } from "./installers.js";
 import { taskCatalog, TASKS } from "./tasks.js";
 import { ACTIONS, listScript, parseList, validate as validateAccount, actionTitle } from "./accounts.js";
-import { agentConfigJson } from "./identity.js";
+import { agentConfigJson, importIdentity } from "./identity.js";
 import { compareVersions, withTrailer } from "./agentpkg.js";
+import { handleAgentUpgrade } from "./ws.js";
 
 const PUBLIC = join(APP_ROOT, "public");
 const TYPES = {
@@ -30,7 +31,7 @@ class HttpError extends Error {
   }
 }
 
-export function startWeb({ config, hub, jobs, library, pkg, auth, identity, logs }) {
+export function startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs }) {
   const clients = new Set();
   const broadcast = (event, data) => {
     const line = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -42,6 +43,7 @@ export function startWeb({ config, hub, jobs, library, pkg, auth, identity, logs
   jobs.on("progress", (j) => broadcast("job", jobSummary(j)));
   jobs.on("removed", (id) => broadcast("job-removed", { id }));
   logs.on("line", (l) => broadcast("log", l));
+  builder.on("status", () => broadcast("master", masterInfo()));
   const ping = setInterval(() => {
     for (const res of clients) res.write(": ping\n\n");
   }, 25_000);
@@ -203,9 +205,41 @@ export function startWeb({ config, hub, jobs, library, pkg, auth, identity, logs
       broadcast("master", masterInfo());
       return json(res, { version });
     }
+    if (p === "/api/agent-package/build" && m === "POST") {
+      builder.build();
+      audit(user, "agent build started");
+      return json(res, { build: builder.status() });
+    }
+    if (p === "/api/import-desktop-master" && m === "POST") {
+      const b = await body(req, 32 * 1048576);
+      let settings = b.settings;
+      let known = b.known ?? null;
+      try {
+        if (typeof settings === "string") settings = JSON.parse(settings);
+        if (typeof known === "string") known = known.trim() ? JSON.parse(known) : null;
+      } catch (e) {
+        throw new HttpError(400, `not valid JSON: ${e.message}`);
+      }
+      let id;
+      try {
+        id = importIdentity(config.dataDir, settings);
+      } catch (e) {
+        throw new HttpError(400, e.message);
+      }
+      const changed = id.fingerprint !== identity.fingerprint;
+      if (changed) hub.useIdentity(id);
+      const pcs = known ? hub.importKnown(known) : 0;
+      audit(user, `imported the desktop master's identity (certificate ${id.fingerprint.slice(0, 16)}…) and ${pcs} PC(s)`);
+      broadcast("master", masterInfo());
+      return json(res, { fingerprint: id.fingerprint, name: id.masterName, pcs, changed });
+    }
     if (p === "/api/agent-package/setup" && m === "GET") {
+      if (builder.state === "building") throw new HttpError(409, "the agent is being compiled — download it when the build is done");
       const info = pkg.info();
-      if (!info) throw new HttpError(404, "no agent package — upload fleetview-agent.exe first");
+      if (!info) {
+        if (config.agentBuild) builder.ensure();
+        throw new HttpError(404, builder.state === "building" ? "no agent yet — it is being compiled now" : `no agent available: ${builder.error ?? "build it in Settings"}`);
+      }
       const cfg = agentConfigJson(identity, { agentAddress: config.agentAddress, emanagementUrl: config.emanagementUrl });
       const out = withTrailer(pkg.image(), cfg);
       audit(user, `downloaded agent setup ${info.version}`);
@@ -337,6 +371,8 @@ export function startWeb({ config, hub, jobs, library, pkg, auth, identity, logs
       discovery: config.discovery,
       fingerprint: identity.fingerprint,
       agent_package: info,
+      agent_build: builder.status(),
+      agents_known: hub.list().length,
     };
   }
 
@@ -384,6 +420,13 @@ export function startWeb({ config, hub, jobs, library, pkg, auth, identity, logs
       ? https.createServer({ cert: readFileSync(config.httpsCert), key: readFileSync(config.httpsKey) }, handle)
       : http.createServer(handle);
   server.requestTimeout = 0; // uploads of big installers
+  // Agents that reach the master through its web address (wss://…/agent).
+  server.on("upgrade", (req, socket, head) => {
+    socket.on("error", () => {});
+    if (!handleAgentUpgrade(req, socket, head, { identity, hub, trustProxy: config.trustProxy, log: (m) => logs.write(m) })) {
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+    }
+  });
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(config.httpPort, config.httpHost, () => {
@@ -444,8 +487,8 @@ async function rawBody(req, max) {
   return Buffer.concat(chunks);
 }
 
-async function body(req) {
-  const buf = await rawBody(req, 1048576);
+async function body(req, max = 1048576) {
+  const buf = await rawBody(req, max);
   if (!buf.length) return {};
   try {
     return JSON.parse(buf.toString("utf8"));

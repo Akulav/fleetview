@@ -2,14 +2,13 @@
 
 ## 1. Prerequisites
 
-- **Master:** any machine with **Node.js 20+** that the PCs can reach on TCP
-  48620 (Linux VPS, a Windows server, or a PC on the LAN). The console is
-  served at `FLEETVIEW_PUBLIC_URL` (default https://fleetview.akulav.com).
-- **Agent PCs:** Windows 10/11, you have local admin to install once.
-- **Network:** on one LAN the agents find the master by UDP broadcast. Anywhere
-  else, give them a fixed address (`FLEETVIEW_AGENT_ADDRESS`), see
-  [Multi-subnet](#multi-subnet).
-- **To build the agent from source:** Rust (MSVC toolchain).
+- **Master:** any machine with **Node.js 20+** behind HTTPS, served at
+  `FLEETVIEW_PUBLIC_URL` (default https://fleetview.akulav.com). The console
+  and the agents share that address: agents open `wss://…/agent`.
+- **Rust on the master**, which compiles the agent itself: on Windows the MSVC
+  toolchain; elsewhere `rustup target add x86_64-pc-windows-gnu` plus mingw-w64.
+- **Agent PCs:** Windows 10/11, you have local admin to install once. They only
+  need outbound HTTPS.
 
 ## 2. Run the master
 
@@ -61,7 +60,8 @@ config embedded:
 }
 ```
 
-`master_address` comes from `FLEETVIEW_AGENT_ADDRESS` (null = discovery) and
+`master_address` comes from `FLEETVIEW_AGENT_ADDRESS` (default: the public URL;
+`"discovery"` = LAN broadcast; null = the address compiled into the agent) and
 `emanagement_url` from `FLEETVIEW_EMANAGEMENT_URL` (turns on the MoldSign
 signing bridge). Keep the file private: it contains the enrollment secret.
 
@@ -117,8 +117,8 @@ actions (bar at the bottom), or click a PC for its page.
 - **Run PowerShell** (as SYSTEM, output in Activity), **Message** (a toast for
   the logged-in user), **Screenshot** (the user is notified and sees a red frame).
 - **Agent settings** (selection bar): change where agents look for the master
-  (`master_address`). The agent restarts to apply it; if the address stops
-  working it alternates with UDP discovery after 3 failed attempts.
+  (`master_address`: a web address, `host:port`, or `discovery`). The agent
+  restarts to apply it. Cleared, it uses the address compiled into it.
 
 The PC's tray icon shows the agent's state: blue with a green check =
 connected, grey = searching for the master, amber arrow = installing pushed
@@ -162,10 +162,11 @@ git push origin v0.2.0
 - Upgrade the master first, then upload the new agent package; it flags every
   older agent as outdated.
 
-## <a name="multi-subnet"></a>Multi-subnet networks
+## <a name="multi-subnet"></a>LAN-only setups
 
-UDP broadcasts don't cross routers. If agents are on different subnets than the
-master, either:
+With `FLEETVIEW_AGENT_ADDRESS=discovery` and `FLEETVIEW_DISCOVERY=true` agents
+find a master on their LAN by UDP broadcast. Broadcasts don't cross routers: if
+agents are on different subnets than the master, either:
 
 - set a fixed `"master_address"` in `agent.config.json`, **or**
 - list the master's subnet broadcast address in `"discovery_targets"`, e.g.
@@ -175,9 +176,9 @@ master, either:
 
 | Port | Proto | Purpose |
 |------|-------|---------|
-| 48620 | TCP | Agent channel (pinned TLS, not HTTP). Open inbound on the master; it can't go through the web proxy. |
-| 48621 | UDP | LAN discovery. |
-| 443 (→ 8080) | TCP | Web console, through the HTTPS reverse proxy. |
+| 443 (→ 8080) | TCP | Web console **and agents** (`wss://…/agent`), through the HTTPS reverse proxy. |
+| 48620 | TCP | Optional direct agent channel (raw pinned TLS) for agents older than 0.6 / LAN setups. |
+| 48621 | UDP | Optional LAN discovery (off by default). |
 
 Agents dial **out** to the master, so agent PCs need no inbound rules.
 

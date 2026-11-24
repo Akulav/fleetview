@@ -29,17 +29,24 @@ pub async fn connection_loop(cfg: AgentConfig, hub: Hub, shutdown: CancellationT
         .master_address
         .as_deref()
         .is_some_and(|a| !a.trim().is_empty());
+    // A web address (https://…) is how a master on the internet is reached:
+    // broadcasting on the LAN can't find it, so never fall back to that.
+    let has_url = cfg
+        .master_address
+        .as_deref()
+        .is_some_and(crate::wsconn::is_url);
     loop {
         if shutdown.is_cancelled() {
             break;
         }
-        let broadcast = has_fixed && failures >= 3 && failures % 2 == 1;
+        let broadcast =
+            has_fixed && (!has_url || cfg.default_address) && failures >= 3 && failures % 2 == 1;
         if broadcast {
             tracing::info!("fixed master address keeps failing; trying discovery");
         }
         match discover_master(&cfg, &shutdown, broadcast).await {
             Ok(found) => {
-                tracing::info!("master at {}", found.addr);
+                tracing::info!("master at {}", found.name);
                 let started = std::time::Instant::now();
                 match run_session(&cfg, &found, &hub, &shutdown).await {
                     Ok(()) => {
@@ -78,8 +85,16 @@ pub async fn connection_loop(cfg: AgentConfig, hub: Hub, shutdown: CancellationT
 
 /// Where the master is and what it calls itself.
 struct FoundMaster {
-    addr: SocketAddr,
+    route: Route,
     name: String,
+}
+
+/// How to open the byte stream the pinned TLS session runs over.
+enum Route {
+    /// The master's agent port (LAN discovery or a `host:port` address).
+    Tcp(SocketAddr),
+    /// The master's web address: a WebSocket to `<address>/agent`.
+    Web(String),
 }
 
 /// Find the master either via the configured fixed address or UDP discovery
@@ -97,6 +112,16 @@ async fn discover_master(
         .map(str::trim)
         .filter(|a| !a.is_empty() && !force_broadcast)
     {
+        if crate::wsconn::is_url(addr) {
+            let name = crate::wsconn::agent_url(addr)?
+                .host_str()
+                .unwrap_or(addr)
+                .to_string();
+            return Ok(FoundMaster {
+                route: Route::Web(addr.to_string()),
+                name,
+            });
+        }
         // Accept a bare host/IP too and default to the standard port.
         let target = if addr.contains(':') {
             addr.to_string()
@@ -109,7 +134,7 @@ async fn discover_master(
             .next()
             .with_context(|| format!("no address for {target}"))?;
         return Ok(FoundMaster {
-            addr: sa,
+            route: Route::Tcp(sa),
             name: target,
         });
     }
@@ -188,7 +213,7 @@ fn parse_beacon(cfg: &AgentConfig, data: &[u8], src: SocketAddr) -> Option<Found
     // proves possession of the master's private key, so a replaying host can't
     // complete it and we simply retry discovery.
     Some(FoundMaster {
-        addr: SocketAddr::new(src.ip(), beacon.control_port),
+        route: Route::Tcp(SocketAddr::new(src.ip(), beacon.control_port)),
         name: beacon.master_name,
     })
 }
@@ -201,16 +226,22 @@ async fn run_session(
     hub: &Hub,
     shutdown: &CancellationToken,
 ) -> Result<()> {
-    let tcp = tokio::time::timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(found.addr))
-        .await
-        .context("tcp connect timed out")?
-        .context("tcp connect")?;
-    tcp.set_nodelay(true).ok();
+    let io: Box<dyn crate::wsconn::Io> = match &found.route {
+        Route::Tcp(addr) => {
+            let tcp = tokio::time::timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(*addr))
+                .await
+                .context("tcp connect timed out")?
+                .context("tcp connect")?;
+            tcp.set_nodelay(true).ok();
+            Box::new(tcp)
+        }
+        Route::Web(address) => crate::wsconn::connect(address).await?,
+    };
     // Always pin the fingerprint from our own config, never one taken from the network.
     let connector = TlsConnector::from(crate::tls::client_config(&cfg.master_cert_fingerprint));
     let server_name =
         rustls::pki_types::ServerName::try_from("fleetview-master").context("server name")?;
-    let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, connector.connect(server_name, tcp))
+    let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, connector.connect(server_name, io))
         .await
         .context("tls handshake timed out")?
         .context("tls handshake")?;

@@ -89,9 +89,12 @@ Configuration (`master/.env`, all optional):
 | `FLEETVIEW_HTTPS_CERT` / `_KEY` | — | Serve HTTPS from Node directly instead of a proxy. |
 | `FLEETVIEW_ADMIN_USER` | `admin` | Console user name. |
 | `FLEETVIEW_ADMIN_PASSWORD_HASH` | — | From `npm run hash-password`. |
-| `FLEETVIEW_AGENT_PORT` | `48620` | Agents' TLS channel (raw TCP: open/forward it to the master). |
-| `FLEETVIEW_AGENT_ADDRESS` | — | `host:port` baked into new agent installers, e.g. `fleetview.akulav.com:48620`. Empty = LAN discovery. |
-| `FLEETVIEW_DISCOVERY` | `true` | Answer agents' LAN broadcasts (UDP 48621). |
+| `FLEETVIEW_AGENT_ADDRESS` | the public URL | Where agents connect. Default: `wss://<public URL>/agent`, through the same HTTPS as the console. `host:port` = the direct agent port, `discovery` = LAN broadcast. |
+| `FLEETVIEW_AGENT_PORT` | `48620` | Optional direct agent port (raw TLS) for LAN setups and agents older than 0.6; `off` to disable. |
+| `FLEETVIEW_DISCOVERY` | `false` | Answer agents' LAN broadcasts (UDP 48621). |
+| `FLEETVIEW_AGENT_BUILD` | `true` | Compile the agent on this master from the repository's sources, at start and whenever they change. |
+| `FLEETVIEW_AGENT_TARGET` | native / `x86_64-pc-windows-gnu` | Rust target for that build (native on Windows, cross-compiled elsewhere). |
+| `FLEETVIEW_CARGO` | `~/.cargo/bin/cargo` | Path to cargo, if it isn't there or on `PATH`. |
 | `FLEETVIEW_DATA_DIR` | `data` | Identity, PCs, jobs, uploaded installers, logs. **Back it up, keep it private.** |
 | `FLEETVIEW_EMANAGEMENT_URL` | — | e-Management URL for the agents' MoldSign signing bridge. |
 | `FLEETVIEW_MAX_UPLOAD_MB` | `2048` | Largest installer accepted. |
@@ -107,38 +110,57 @@ npm run import-desktop-master -- "C:\Users\<you>\AppData\Roaming\FleetView"
 ```
 
 This copies `master.settings.json` (the identity) and `known_agents.json` (the
-PCs and their pinned agent keys) into `data/`. Stop the desktop master first.
-If the new master is not on the PCs' LAN, select all computers → **Agent
-settings** → set the master address (e.g. `fleetview.akulav.com:48620`) *while
-the old master is still reachable*, or set `FLEETVIEW_AGENT_ADDRESS` before
-handing out new installers.
+PCs and their pinned agent keys) into `data/`. Without shell access to the
+server, do the same in the console: **Settings → Move PCs from the desktop
+master** (upload both files).
+
+Then move the PCs over, from the old desktop master:
+
+1. In the web console, **Settings → Download agent installer** (0.6 or newer).
+2. In the desktop master, load that file as the agent package and **Update** all PCs.
+3. Agent 0.6 has no master address from the desktop era, so it uses its built-in
+   one (the web address it was compiled for) and connects to the web master with the
+   same pinned certificate. Until that address answers it also keeps trying LAN
+   discovery, so the desktop master doesn't lose a PC if the website isn't up yet.
+4. Stop the desktop master.
 
 ### Add computers
 
-**Settings → Upload agent package** (`FleetViewAgent-x.y.z.exe` from a release,
-or `target\release\fleetview-agent.exe`), then **Download agent installer**.
-Run it on each PC (double-click, or `/S` for silent). The PC appears within
-seconds. Older agents show *update*; **Settings → Update n agents** updates them
-remotely.
+**Settings → Download agent installer.** The master compiles the agent itself
+(on first start and whenever its sources change, a few minutes the first time)
+with its own web address built in; every download carries the master's
+certificate and address. Run it on each PC (double-click, or `/S` for silent).
+The PC appears within seconds. Older agents show *update*; **Settings → Update n
+agents** updates them remotely. A built `fleetview-agent.exe` can still be
+uploaded instead when the master can't compile (no Rust on the server).
 
 ## 🌐 Deploy at fleetview.akulav.com
 
-Two ports matter:
+Only HTTPS is needed: the console and the agents share it. Agents open a
+WebSocket to `/agent` and run their pinned TLS inside it, so the proxy or CDN
+(Cloudflare) carries only ciphertext and can't impersonate the master.
 
 | Port | Who | Through the reverse proxy? |
 |---|---|---|
-| 443 → `127.0.0.1:8080` | people using the console | yes (HTTPS) |
-| **48620/tcp** | agents (pinned TLS, not HTTP) | **no**: open/forward it to the master directly |
-| 48621/udp | LAN discovery | only on the master's own LAN |
+| 443 → `127.0.0.1:8080` | the console **and the agents** (`wss://…/agent`) | yes (HTTPS + WebSocket) |
+| 48620/tcp | optional: agents older than 0.6, LAN setups | no (raw TLS) |
 
-1. Put the app in `/opt/fleetview/master` (or anywhere), create `.env` as above.
+**The agent is compiled on the server**, so it needs Rust:
+
+- Linux: `curl https://sh.rustup.rs -sSf | sh`, then
+  `rustup target add x86_64-pc-windows-gnu` and `apt install gcc-mingw-w64-x86-64`
+  (as the user the master runs as).
+- Windows: Rust with the MSVC build tools.
+
+1. Put the repository in `/opt/fleetview` (or anywhere: the master needs the
+   `agent/` and `shared/` folders next to `master/`), create `master/.env` as above.
 2. Reverse proxy with automatic HTTPS: [`master/deploy/Caddyfile`](master/deploy/Caddyfile)
    (or [`nginx.conf`](master/deploy/nginx.conf)). The proxy must not buffer
    `/api/events` (live updates); both examples handle this.
 3. Run it as a service: [`master/deploy/fleetview-master.service`](master/deploy/fleetview-master.service)
    (systemd). On Windows, run `node server.js` from Task Scheduler at startup
    (or a service wrapper such as NSSM) in the `master` folder.
-4. Firewall: allow 443 (and 80 for the certificate) and **48620/tcp**.
+4. Firewall: allow 443 (and 80 for the certificate).
 5. Health check: `GET /healthz`.
 
 ### With AutoNode
@@ -146,33 +168,25 @@ Two ports matter:
 [AutoNode](https://github.com/Akulav/auto-node) can host the master straight from this repository:
 
 1. **Websites → New Website → From GitHub** → `Akulav/fleet-manager` (branch `main`). The root
-   `package.json` makes AutoNode treat it as a Node.js site (`npm start` → `master/server.js`); the Rust
-   agent next to it is not built.
+   `package.json` makes AutoNode treat it as a Node.js site (`npm start` → `master/server.js`). The master
+   then compiles the agent from the `agent/` folder of the same checkout (Rust must be installed on the
+   AutoNode server for the site's user, see above); the console shows the build's progress under Settings.
 2. **Settings → Environment variables** of the site:
    - `FLEETVIEW_ADMIN_PASSWORD_HASH`: the line printed by `npm run hash-password` (run it on any PC
      with Node, in `master/`). Without it, a random password is printed once in the site's **Logs**.
-   - `FLEETVIEW_AGENT_ADDRESS`: where agents connect (see the Cloudflare note below).
-   - Optional: `FLEETVIEW_MASTER_NAME`, `FLEETVIEW_EMANAGEMENT_URL`.
+   - Optional: `FLEETVIEW_PUBLIC_URL` (default `https://fleetview.akulav.com`, also the address compiled
+     into the agent), `FLEETVIEW_MASTER_NAME`, `FLEETVIEW_EMANAGEMENT_URL`.
 
-   `PORT`, `HOST` and `DATA_DIR` come from AutoNode: the master's identity, PCs, jobs and uploads live in
-   the site's data folder, which deploys and rollbacks never touch (and full backups include).
+   `PORT`, `HOST` and `DATA_DIR` come from AutoNode: the master's identity, PCs, jobs, uploads and the
+   agent build cache live in the site's data folder, which deploys and rollbacks never touch.
 3. **Domains** → add `fleetview.akulav.com` to the site. Health check path: `/healthz`.
-4. **Router:** forward **TCP 48620** to the AutoNode server. AutoNode's proxy only carries the web
-   console (80/443); the agents' TLS channel goes to the master directly.
-5. Moving from the desktop master: put its `master.settings.json` and `known_agents.json` in a folder on
-   the server and run `DATA_DIR=<site data folder> npm run import-desktop-master -- <that folder>` in
-   `master/` as the site user (or upload `master.settings.json` into the site's data folder with the
-   Files tab, then restart the site).
+4. **DNS:** `fleetview.akulav.com` must resolve: in Cloudflare add a record for `fleetview` (A to the
+   AutoNode server's public IP, or a CNAME / tunnel route, as for the other sites on AutoNode).
+5. Moving from the desktop master: **Settings → Move PCs from the desktop master** in the console, then
+   update the PCs from the desktop master (see above).
 
-**Cloudflare:** if `fleetview.akulav.com` is proxied (orange cloud), Cloudflare carries only HTTP(S), so
-agents can't reach port 48620 through that name. Give them a DNS-only (grey cloud) record, e.g.
-`agents.akulav.com` → your public IP, and set `FLEETVIEW_AGENT_ADDRESS=agents.akulav.com:48620`. If the
-AutoNode server is on the same LAN as the PCs, leave it empty: they find it by broadcast.
-
-If the master runs inside the institution's LAN, agents find it by broadcast and
-`FLEETVIEW_AGENT_ADDRESS` can stay empty. If it runs elsewhere (a VPS), set
-`FLEETVIEW_AGENT_ADDRESS=fleetview.akulav.com:48620` and point existing agents
-at it (see above).
+**Cloudflare:** proxied (orange cloud) is fine: WebSockets pass through, and the agents' pinned TLS runs
+inside them. No port besides 443 is needed.
 
 ## 📦 Pushing software
 

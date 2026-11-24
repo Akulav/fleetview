@@ -115,7 +115,23 @@ the network except through the pinned TLS channel.
 3. Agent verifies the signature (pinned public key) and the fingerprint, then
    connects to `source-ip:control_port` over TLS and enrolls.
 
-A fixed `master_address` in the agent config skips discovery entirely.
+Discovery is only used with `master_address: "discovery"`, or as a fallback for
+agents with no address while their built-in web address doesn't answer. The
+normal path is the web address:
+
+## Web address (default)
+
+1. The agent opens a WebSocket to `wss://<public URL>/agent` (TLS to the proxy /
+   Cloudflare, checked against the public roots).
+2. Inside it, the agent runs its usual TLS session, pinned to the master's own
+   certificate, and enrolls as on the direct port. The proxy sees only
+   ciphertext and can't impersonate the master.
+3. The master terminates the inner TLS in `src/ws.js` and hands the socket to
+   the same agent hub as direct connections.
+
+The master compiles the agent itself (`src/builder.js`): `cargo build --release`
+of the repository's `agent/` with `FLEETVIEW_DEFAULT_MASTER_URL` set to its
+public URL, cached in the data folder and redone when the sources change.
 
 ## Reliability
 

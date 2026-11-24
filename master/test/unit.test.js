@@ -198,3 +198,28 @@ test("every maintenance and account script is valid PowerShell", { skip: process
   }
   assert.deepEqual(psParseErrors(scripts), []);
 });
+
+test("importing the desktop master's identity and PCs", async () => {
+  const { importIdentity } = await import("../src/identity.js");
+  const { AgentHub } = await import("../src/agents.js");
+  const a = mkdtempSync(join(tmpdir(), "fv-imp-a-"));
+  const b = mkdtempSync(join(tmpdir(), "fv-imp-b-"));
+  try {
+    const desktop = loadOrCreateIdentity(a, { log: () => {} });
+    const web = loadOrCreateIdentity(b, { log: () => {} });
+    assert.notEqual(desktop.fingerprint, web.fingerprint);
+    const hub = new AgentHub({ config: { dataDir: b }, identity: web, log: () => {} });
+    hub.useIdentity(importIdentity(b, desktop.raw));
+    assert.equal(web.fingerprint, desktop.fingerprint, "the live identity object is switched");
+    assert.equal(loadOrCreateIdentity(b, { log: () => {} }).fingerprint, desktop.fingerprint, "and saved");
+    assert.throws(() => importIdentity(b, { identity: {} }));
+    const n = hub.importKnown([{ agent_id: "pc1", hostname: "PC-001", key_hash: "ab" }, { nope: 1 }]);
+    assert.equal(n, 1);
+    assert.equal(hub.get("pc1").hostname, "PC-001");
+    assert.equal(hub.get("pc1").key_hash, "ab");
+    hub.close();
+  } finally {
+    rmSync(a, { recursive: true, force: true });
+    rmSync(b, { recursive: true, force: true });
+  }
+});

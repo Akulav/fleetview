@@ -43,6 +43,10 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # only to accept a handful of localhost requests, and tiny_http does exactly that
 # with no async machinery of its own (we drive reqwest on a private runtime).
 tiny_http = "0.12"
+# The master's web address (wss://…/agent): WebSocket handshake only; TLS is
+# done with the rustls above, against the public roots below.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+webpki-roots = "1"
 
 [dependencies.windows]
 version = "0.58"

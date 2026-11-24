@@ -62,6 +62,12 @@ pub struct AgentConfig {
     /// config the master generates. Filled in by [`AgentConfig::load`].
     #[serde(skip)]
     pub agent_key: String,
+
+    /// `master_address` was empty and [`DEFAULT_MASTER_URL`] is used instead.
+    /// Such agents still try LAN discovery when the web address keeps failing,
+    /// so a fleet updated before the website is up stays reachable.
+    #[serde(skip)]
+    pub default_address: bool,
 }
 
 fn default_telemetry_interval() -> u64 {
@@ -141,9 +147,33 @@ impl AgentConfig {
             cfg.agent_id = load_or_create_agent_id();
         }
         cfg.agent_key = load_or_create_secret(&paths::agent_key_path(), 32);
+        cfg.resolve_master_address();
         Ok(cfg)
     }
+
+    /// No address (configs from LAN-era masters) → the built-in web address;
+    /// `"discovery"` → LAN broadcast only.
+    fn resolve_master_address(&mut self) {
+        let addr = self
+            .master_address
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if addr.is_empty() {
+            self.master_address = Some(DEFAULT_MASTER_URL.to_string());
+            self.default_address = true;
+        } else if addr.eq_ignore_ascii_case("discovery") {
+            self.master_address = None;
+        }
+    }
 }
+
+/// Where agents look for the master when their config names no address. A
+/// build can override it with `FLEETVIEW_DEFAULT_MASTER_URL`.
+pub const DEFAULT_MASTER_URL: &str = match option_env!("FLEETVIEW_DEFAULT_MASTER_URL") {
+    Some(u) => u,
+    None => "https://fleetview.akulav.com",
+};
 
 /// Config keys the master may change remotely (via `MasterMsg::SetConfig`).
 /// Trust material — `master_public_key`, `master_cert_fingerprint`,
@@ -240,4 +270,35 @@ fn load_or_create_secret(path: &std::path::Path, bytes: usize) -> String {
         tracing::warn!("cannot persist {}: {e}", path.display());
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(addr: Option<&str>) -> AgentConfig {
+        let mut c: AgentConfig = serde_json::from_value(serde_json::json!({
+            "master_public_key": "k",
+            "master_cert_fingerprint": "f",
+            "enrollment_secret": "s",
+            "master_address": addr,
+        }))
+        .unwrap();
+        c.resolve_master_address();
+        c
+    }
+
+    #[test]
+    fn empty_address_means_the_web_master() {
+        for a in [None, Some(""), Some("  ")] {
+            let c = cfg(a);
+            assert_eq!(c.master_address.as_deref(), Some(DEFAULT_MASTER_URL));
+            assert!(c.default_address);
+        }
+        let c = cfg(Some("Discovery"));
+        assert_eq!(c.master_address, None);
+        let c = cfg(Some("10.0.0.5:48620"));
+        assert_eq!(c.master_address.as_deref(), Some("10.0.0.5:48620"));
+        assert!(!c.default_address);
+    }
 }

@@ -49,6 +49,14 @@ export function loadOrCreateIdentity(dataDir, { masterName = "", log = console.l
   return validate(s, path);
 }
 
+/** Check a desktop master's `master.settings.json` (parsed) and save it as
+ * this master's identity. Returns the new identity. */
+export function importIdentity(dataDir, settings) {
+  const id = validate(settings, "master.settings.json");
+  writeJsonAtomic(identityPath(dataDir), settings, { private: true });
+  return id;
+}
+
 function validate(s, path) {
   const seed = Buffer.from(s?.identity?.signing_key_b64 ?? "", "base64");
   if (seed.length !== 32) throw new Error(`${path}: identity.signing_key_b64 must be 32 bytes`);
@@ -104,7 +112,8 @@ export function agentConfigJson(id, { agentAddress = "", emanagementUrl = "" } =
     master_public_key: id.publicKeyB64,
     master_cert_fingerprint: id.fingerprint,
     enrollment_secret: id.enrollmentSecret,
-    master_address: agentAddress || null,
+    // "discovery" (or empty): find the master by LAN broadcast.
+    master_address: agentAddress && agentAddress.toLowerCase() !== "discovery" ? agentAddress : null,
     discovery_targets: [],
     telemetry_interval_secs: 30,
   };
