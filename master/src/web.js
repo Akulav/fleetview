@@ -9,7 +9,8 @@ import { APP_ROOT } from "./config.js";
 import { PRESETS, WARNINGS } from "./installers.js";
 import { taskCatalog, TASKS } from "./tasks.js";
 import { ACTIONS, listScript, parseList, validate as validateAccount, actionTitle } from "./accounts.js";
-import { agentConfigJson, importIdentity } from "./identity.js";
+import { agentConfigJson, importIdentity, identityPath } from "./identity.js";
+import { writeJsonAtomic } from "./store.js";
 import { compareVersions, withTrailer } from "./agentpkg.js";
 import { handleAgentUpgrade } from "./ws.js";
 import { VaultStore } from "./vault.js";
@@ -299,6 +300,19 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       }
     }
 
+    // ---- master settings kept in master.settings.json ----
+    if (p === "/api/settings/emanagement" && m === "PUT") {
+      if (config.emanagementFromEnv) throw new HttpError(409, "set by FLEETVIEW_EMANAGEMENT_URL on the server — change it there");
+      const url = String((await body(req)).url ?? "").trim().replace(/\/+$/, "");
+      if (url && !/^https?:\/\/[^\s/]+/i.test(url)) throw new HttpError(400, "enter an http(s):// address, or leave it empty");
+      identity.raw.emanagement_url = url;
+      writeJsonAtomic(identityPath(config.dataDir), identity.raw, { private: true });
+      config.emanagementUrl = url;
+      audit(user, `e-Management URL set to ${url || "(none)"}`);
+      broadcast("master", masterInfo());
+      return json(res, { url });
+    }
+
     // ---- agent package ----
     if (p === "/api/agent-package" && m === "PUT") {
       const buf = await rawBody(req, 64 * 1048576);
@@ -330,6 +344,8 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       }
       const changed = id.fingerprint !== identity.fingerprint;
       if (changed) hub.useIdentity(id);
+      // The desktop master kept its e-Management URL in this file.
+      if (!config.emanagementFromEnv) config.emanagementUrl = String(settings.emanagement_url ?? "").trim();
       const pcs = known ? hub.importKnown(known) : 0;
       audit(user, `imported the desktop master's identity (certificate ${id.fingerprint.slice(0, 16)}…) and ${pcs} PC(s)`);
       broadcast("master", masterInfo());
@@ -470,6 +486,8 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       public_url: config.publicUrl,
       agent_port: config.agentPort,
       agent_address: config.agentAddress,
+      emanagement_url: config.emanagementUrl,
+      emanagement_from_env: !!config.emanagementFromEnv,
       discovery: config.discovery,
       fingerprint: identity.fingerprint,
       agent_package: info,

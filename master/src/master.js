@@ -20,6 +20,11 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
   const logs = new Logs(config.dataDir, { quiet });
   const log = (m) => logs.write(m);
   const identity = loadOrCreateIdentity(config.dataDir, { masterName: config.masterName, log });
+  // e-Management URL (turns on the agents' MoldSign bridge): the environment
+  // wins; otherwise the value saved in master.settings.json — set in Settings,
+  // or imported from the desktop master, which kept it there.
+  config.emanagementFromEnv = !!config.emanagementUrl;
+  if (!config.emanagementUrl) config.emanagementUrl = String(identity.raw.emanagement_url ?? "").trim();
   const hub = new AgentHub({ config, identity, log });
   if (config.agentPort !== null) {
     await hub.listen();

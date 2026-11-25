@@ -19,6 +19,12 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
 - **Two-step sign-in (TOTP)** in Settings → Security with a QR code; required for the vault. Codes work once;
   turning 2FA on or off signs out other sessions; failures count toward the sign-in lockout.
 
+### Fixed
+- New agent installers had no `emanagement_url` (so no MoldSign bridge) after moving from the desktop master:
+  it kept the URL in `master.settings.json`, which the web master ignored unless `FLEETVIEW_EMANAGEMENT_URL`
+  was set. The saved value is now used, shown and editable in Settings, and **Agent settings** can push it to
+  PCs that are missing it.
+
 ### Changed
 - **The master is now a Node.js web app** (`master/`, no dependencies), meant to run at
   https://fleetview.akulav.com behind an HTTPS proxy, configured with `.env`. It speaks the same agent protocol,

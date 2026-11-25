@@ -1261,16 +1261,49 @@ function openMessage(ids) {
 }
 
 function openAgentSettings(ids) {
+  const emg = h("input", { type: "text", placeholder: "https://documente.example.md — empty = turn the bridge off", value: S.master?.emanagement_url ?? "" });
   const addr = h("input", { type: "text", placeholder: "e.g. https://fleetview.akulav.com — empty = the agent's built-in address", value: S.master?.agent_address ?? "" });
+  const useEmg = h("input", { type: "checkbox", checked: true });
+  const useAddr = h("input", { type: "checkbox" });
   const d = {
     title: `Agent settings on ${targetLine(ids)}`,
     render() {
       put(d.body,
-        h("div", { class: "note info" }, "Changes where the agents look for this master: a web address (https://…), host:port for the direct agent port, or \"discovery\" for LAN broadcast. They restart and reconnect."),
-        h("label", { class: "field" }, "Master address"),
+        h("div", { class: "note info" }, "Writes these into each PC's agent.config.json; the agent restarts to apply them. Only ticked settings change."),
+        h("label", { class: "check" }, useEmg, h("span", {}, "e-Management URL", h("small", {}, "Turns on the MoldSign signing bridge for e-Management on these PCs."))),
+        emg,
+        h("label", { class: "check", style: { marginTop: "16px" } }, useAddr, h("span", {}, "Master address", h("small", {}, "Where the agents look for this master: a web address (https://…), host:port for the direct agent port, or \"discovery\" for LAN broadcast."))),
         addr,
       );
-      put(d.footer, h("button", { class: "btn primary big", onclick: () => createJob({ kind: "config", targets: ids, payload: { updates: [{ key: "master_address", value: addr.value.trim() }] } }) }, "Apply"));
+      put(d.footer, h("button", { class: "btn primary big", onclick: () => {
+        const updates = [];
+        if (useEmg.checked) updates.push({ key: "emanagement_url", value: emg.value.trim() });
+        if (useAddr.checked) updates.push({ key: "master_address", value: addr.value.trim() });
+        if (!updates.length) return toast("Tick at least one setting.", true);
+        createJob({ kind: "config", targets: ids, payload: { updates } });
+      } }, "Apply"));
+    },
+  };
+  openDrawer(d);
+}
+
+function openEmanagementSetting() {
+  const url = h("input", { type: "text", placeholder: "https://documente.example.md", value: S.master?.emanagement_url ?? "" });
+  const d = {
+    title: "e-Management URL",
+    render() {
+      put(d.body,
+        h("p", { class: "sub" }, "Put into every new agent installer and agent update; it turns on the MoldSign signing bridge. PCs installed already keep their own value — change those with Agent settings (tick PCs on Computers)."),
+        url);
+      put(d.footer, h("button", { class: "btn primary big", onclick: async () => {
+        try {
+          const r = await api("PUT", "/api/settings/emanagement", { url: url.value });
+          S.master.emanagement_url = r.url;
+          toast(r.url ? "Saved — new installers include it" : "Cleared");
+          closeDrawer();
+          go("settings");
+        } catch (e) { fail(e); }
+      } }, "Save"));
     },
   };
   openDrawer(d);
@@ -1487,6 +1520,8 @@ function renderSettings(main, full) {
           h("span", {}, "Console URL"), h("b", {}, m.public_url),
           h("span", {}, "Direct agent port"), h("b", {}, m.agent_port ? `${m.agent_port} (TLS, agents before 0.6)` : "off"),
           h("span", {}, "Agents connect to"), h("b", {}, m.agent_address || "LAN discovery"),
+          h("span", {}, "e-Management URL"), h("b", {}, m.emanagement_url || h("span", { class: "pill warn" }, "not set — new agents get no MoldSign bridge"), " ",
+            m.emanagement_from_env ? h("span", { class: "sub" }, "(from .env)") : h("button", { class: "btn small ghost", onclick: openEmanagementSetting }, "Change")),
           h("span", {}, "LAN discovery"), h("b", {}, m.discovery ? "on" : "off"),
           h("span", {}, "Certificate"), h("b", { class: "mono" }, m.fingerprint),
           h("span", {}, "Version"), h("b", {}, m.version),

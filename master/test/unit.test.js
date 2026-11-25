@@ -223,3 +223,44 @@ test("importing the desktop master's identity and PCs", async () => {
     rmSync(b, { recursive: true, force: true });
   }
 });
+// ---- e-Management URL from the imported desktop settings ----------------
+import { startMaster } from "../src/master.js";
+import { splitTrailer as splitTrailer2 } from "../src/agentpkg.js";
+import { readFileSync } from "node:fs";
+
+test("installers carry the e-Management URL saved in master.settings.json", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fv-emg-"));
+  // An identity as the desktop master left it, with its e-Management URL.
+  const { loadOrCreateIdentity: mk } = await import("../src/identity.js");
+  const id = mk(dir, { log: () => {} });
+  writeFileSync(join(dir, "master.settings.json"), JSON.stringify({ ...id.raw, emanagement_url: "https://documente.example.md" }));
+  const saved = process.env.FLEETVIEW_EMANAGEMENT_URL;
+  delete process.env.FLEETVIEW_EMANAGEMENT_URL;
+  const m = await startMaster(
+    { dataDir: dir, httpHost: "127.0.0.1", httpPort: 0, agentPort: null, agentBuild: false, discovery: false, publicUrl: "http://127.0.0.1", secureCookies: false, adminUser: "admin", adminPassword: "pw-1234567890", adminPasswordHash: "", emanagementUrl: "" },
+    { quiet: true },
+  );
+  try {
+    m.pkg.save(Buffer.from("MZ fake agent FLEETVIEW_AGENT_VERSION=0.6.0\0"));
+    const base = `http://127.0.0.1:${m.web.port}`;
+    const login = await fetch(`${base}/api/login`, { method: "POST", headers: { "X-FleetView": "1", "Content-Type": "application/json" }, body: JSON.stringify({ user: "admin", password: "pw-1234567890" }) });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    const setupConfig = async () => {
+      const res = await fetch(`${base}/api/agent-package/setup`, { headers: { cookie } });
+      assert.equal(res.status, 200);
+      return JSON.parse(splitTrailer2(Buffer.from(await res.arrayBuffer())).config.toString());
+    };
+    assert.equal((await setupConfig()).emanagement_url, "https://documente.example.md");
+    // Changed in Settings: saved and used for the next installer at once.
+    const put = await fetch(`${base}/api/settings/emanagement`, { method: "PUT", headers: { cookie, "X-FleetView": "1", "Content-Type": "application/json" }, body: JSON.stringify({ url: "https://docs.example.org/" }) });
+    assert.equal(put.status, 200);
+    assert.equal((await setupConfig()).emanagement_url, "https://docs.example.org");
+    assert.equal(JSON.parse(readFileSync(join(dir, "master.settings.json"), "utf8")).emanagement_url, "https://docs.example.org");
+    const bad = await fetch(`${base}/api/settings/emanagement`, { method: "PUT", headers: { cookie, "X-FleetView": "1", "Content-Type": "application/json" }, body: JSON.stringify({ url: "javascript:alert(1)" }) });
+    assert.equal(bad.status, 400);
+  } finally {
+    await m.close();
+    if (saved !== undefined) process.env.FLEETVIEW_EMANAGEMENT_URL = saved;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
