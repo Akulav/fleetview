@@ -33,7 +33,7 @@ class HttpError extends Error {
   }
 }
 
-export function startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs }) {
+export function startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync }) {
   const vault = new VaultStore(config.dataDir);
   const clients = new Set();
   const broadcast = (event, data) => {
@@ -309,6 +309,7 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       writeJsonAtomic(identityPath(config.dataDir), identity.raw, { private: true });
       config.emanagementUrl = url;
       audit(user, `e-Management URL set to ${url || "(none)"}`);
+      configSync?.syncAll(); // every online PC now; the others when they connect
       broadcast("master", masterInfo());
       return json(res, { url });
     }
@@ -346,6 +347,7 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       if (changed) hub.useIdentity(id);
       // The desktop master kept its e-Management URL in this file.
       if (!config.emanagementFromEnv) config.emanagementUrl = String(settings.emanagement_url ?? "").trim();
+      configSync?.syncAll();
       const pcs = known ? hub.importKnown(known) : 0;
       audit(user, `imported the desktop master's identity (certificate ${id.fingerprint.slice(0, 16)}…) and ${pcs} PC(s)`);
       broadcast("master", masterInfo());
@@ -647,6 +649,7 @@ export function agentSummary(a, pkg) {
     tags: a.tags ?? [],
     notes: a.notes ?? "",
     software_count: (a.software ?? []).length,
+    emanagement: a.emanagement ?? null,
   };
 }
 

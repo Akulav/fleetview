@@ -251,3 +251,27 @@ test("the direct agent port still works (LAN setups, older agents)", { skip }, a
 ${t.output}`);
   assert.ok(existsSync(marker));
 });
+
+test("the master keeps every agent's e-Management URL in sync", { skip }, async () => {
+  const cfgPath = join(work, "agent", "agent.config.json");
+  const agentCfg = () => JSON.parse(readFileSync(cfgPath, "utf8"));
+  assert.equal(agentCfg().emanagement_url ?? null, null, "starts without one (like the broken PC)");
+
+  // Set on the master: pushed to the online agent right away.
+  await call("PUT", "/api/settings/emanagement", { url: "https://documente.example.md" });
+  await until("the agent's config to get the URL", () => agentCfg().emanagement_url === "https://documente.example.md", 60_000);
+  await until("the sync result", () => master.hub.get(agentId).emanagement?.state === "fixed", 30_000);
+
+  // Already in sync: nothing to change.
+  await master.configSync.sync(agentId);
+  assert.equal(master.hub.get(agentId).emanagement.state, "ok");
+
+  // Removed on the PC: put back when the agent next connects.
+  stopAgent();
+  await until("the agent to go offline", () => !master.hub.isOnline(agentId), 30_000);
+  const c = agentCfg();
+  delete c.emanagement_url;
+  writeFileSync(cfgPath, JSON.stringify(c, null, 2));
+  startAgent();
+  await until("the URL to be restored on connect", () => agentCfg().emanagement_url === "https://documente.example.md", 60_000);
+});

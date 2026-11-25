@@ -13,6 +13,7 @@ import { JobEngine } from "./jobs.js";
 import { Auth } from "./auth.js";
 import { Logs } from "./logs.js";
 import { startWeb } from "./web.js";
+import { ConfigSync } from "./configsync.js";
 
 export async function startMaster(overrides = {}, { quiet = false } = {}) {
   const config = { ...loadConfig(), ...overrides };
@@ -37,7 +38,8 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
   const builder = new AgentBuilder({ config, pkg, log });
   const jobs = new JobEngine({ config, hub, library, pkg, log });
   const auth = new Auth(config, log);
-  const web = await startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs });
+  const configSync = new ConfigSync({ config, hub, jobs, log });
+  const web = await startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync });
   // A prebuilt exe (FLEETVIEW_AGENT_EXE) takes the place of building.
   if (config.agentBuild && !pkg.envPath) builder.ensure();
   log(`${identity.masterName} ready — certificate ${identity.fingerprint.slice(0, 16)}…`);
@@ -46,6 +48,7 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
     identity,
     hub,
     jobs,
+    configSync,
     library,
     pkg,
     builder,
@@ -55,6 +58,7 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
     async close() {
       web.close();
       builder.close();
+      configSync.close();
       discovery?.close();
       jobs.close();
       hub.close();

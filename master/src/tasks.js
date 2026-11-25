@@ -165,6 +165,25 @@ $out = & gpupdate.exe /target:computer /force 2>&1 | Out-String
 ($out -split "\`r?\`n" | Where-Object { $_.Trim() }) -join "\`n"
 exit $LASTEXITCODE`,
   },
+  agent_config: {
+    label: "Show agent settings",
+    group: "Maintenance",
+    help: "Reads the agent's own settings on each PC (master address, e-Management URL for the MoldSign bridge, version). Changes nothing; never shows the agent's secrets. PCs without an e-Management URL are marked Failed so they stand out — fix them with Agent settings.",
+    minutes: 5,
+    failMeaning: "no e-Management URL — MoldSign bridge off (use Agent settings)",
+    script: () => `${UTF8}
+$path = Join-Path $env:ProgramData 'FleetView\\agent.config.json'
+if (-not (Test-Path $path)) { 'agent.config.json not found at ' + $path; exit 2 }
+$c = Get-Content $path -Raw | ConvertFrom-Json
+$exe = Join-Path $env:ProgramFiles 'FleetView Agent\\fleetview-agent.exe'
+$ver = if (Test-Path $exe) { (Get-Item $exe).LastWriteTime.ToString('yyyy-MM-dd HH:mm') } else { 'not found' }
+'Master address:   ' + $(if ($c.master_address) { $c.master_address } else { '(none - built-in address)' })
+'Config changed:   ' + (Get-Item $path).LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+'Agent exe:        ' + $ver
+# Last line = the summary shown in Activity.
+'e-Management URL: ' + $(if ($c.emanagement_url) { $c.emanagement_url } else { '(none - MoldSign bridge off)' })
+exit $(if ($c.emanagement_url) { 0 } else { 1 })`,
+  },
   flush_dns: {
     label: "Flush DNS cache",
     group: "Network",

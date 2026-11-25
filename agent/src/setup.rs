@@ -489,6 +489,12 @@ fn retry<T>(mut f: impl FnMut() -> std::io::Result<T>) -> Result<T> {
 /// fails and leaves the agent stopped).
 pub fn schedule_service_restart() {
     use std::os::windows::process::CommandExt;
+    // A foreground `console` run with its own data folder (development, the
+    // end-to-end test) is not the installed service: never restart that one.
+    if paths::console_mode() {
+        tracing::info!("console mode: not restarting the installed service; the change applies on the next start");
+        return;
+    }
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;

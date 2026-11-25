@@ -464,7 +464,8 @@ function renderRows() {
           h("td", { class: "hide-sm" }, a.online ? meter(a.cpu) : h("span", { class: "sub" }, "—")),
           h("td", { class: "hide-sm" }, meter(a.mem)),
           h("td", { class: "hide-sm" }, meter(a.disk)),
-          h("td", { class: "hide-sm" }, a.agent_version || "—", a.outdated ? h("span", { class: "pill warn", style: { marginLeft: "6px" } }, "update") : null),
+          h("td", { class: "hide-sm" }, a.agent_version || "—", a.outdated ? h("span", { class: "pill warn", style: { marginLeft: "6px" } }, "update") : null,
+            a.emanagement && ["error", "unsupported"].includes(a.emanagement.state) ? h("span", { class: "pill bad", style: { marginLeft: "6px" }, title: a.emanagement.detail ?? "" }, "MoldSign ✗") : null),
         ),
       ),
     );
@@ -986,6 +987,7 @@ function openDevice(id) {
         h("button", { class: "btn", onclick: () => openScript([id]) }, "PowerShell"),
         h("button", { class: "btn", disabled: !a.online, onclick: takeShot }, "Screenshot"),
         h("button", { class: "btn", onclick: () => openMessage([id]) }, "Message"),
+        h("button", { class: "btn", onclick: () => openAgentSettings([id]) }, "Agent settings"),
         h("button", { class: "btn ghost", disabled: !a.online, onclick: () => api("POST", `/api/agents/${id}/refresh`).then(() => setTimeout(() => d.render(), 1500)).catch(fail) }, "Refresh"),
       );
       let content;
@@ -1005,6 +1007,7 @@ function openDevice(id) {
             fact("Disks", disks),
             fact("Uptime", uptime(a.uptime_secs)),
             fact("Agent", a.agent_version + (a.outdated ? " (update available)" : "")),
+            fact("MoldSign bridge", emgText(a.emanagement)),
             fact("MAC", detail?.macs?.join(", ")),
           ),
           shot ? h("img", { class: "shot", src: shot, alt: "screenshot" }) : null,
@@ -1417,6 +1420,19 @@ function importCard() {
   );
 }
 
+/** What the master's automatic e-Management sync found on a PC. */
+function emgText(e) {
+  if (!S.master?.emanagement_url) return "no e-Management URL on the master";
+  if (!e) return "checked when the PC connects";
+  return {
+    ok: "on — settings match the master",
+    fixed: `was missing — set by the master ${ago(e.at)} (agent restarted)`,
+    pending: "being applied — the agent is restarting",
+    error: `couldn't set it: ${e.detail}`,
+    unsupported: e.detail,
+  }[e.state] ?? e.state;
+}
+
 // ---- Security: two-step sign-in (TOTP) ----
 function securityCard() {
   const card = h("div", { class: "card card-pad", style: { marginTop: "16px" } });
@@ -1521,6 +1537,7 @@ function renderSettings(main, full) {
           h("span", {}, "Direct agent port"), h("b", {}, m.agent_port ? `${m.agent_port} (TLS, agents before 0.6)` : "off"),
           h("span", {}, "Agents connect to"), h("b", {}, m.agent_address || "LAN discovery"),
           h("span", {}, "e-Management URL"), h("b", {}, m.emanagement_url || h("span", { class: "pill warn" }, "not set — new agents get no MoldSign bridge"), " ",
+            m.emanagement_url ? h("span", { class: "sub" }, `· kept on every PC automatically (${[...S.agents.values()].filter((x) => x.emanagement?.state === "ok" || x.emanagement?.state === "fixed").length} in sync)`) : null, " ",
             m.emanagement_from_env ? h("span", { class: "sub" }, "(from .env)") : h("button", { class: "btn small ghost", onclick: openEmanagementSetting }, "Change")),
           h("span", {}, "LAN discovery"), h("b", {}, m.discovery ? "on" : "off"),
           h("span", {}, "Certificate"), h("b", { class: "mono" }, m.fingerprint),

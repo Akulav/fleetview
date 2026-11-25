@@ -19,6 +19,11 @@ pub fn use_console_data_dir(dir: PathBuf) {
     let _ = CONSOLE_DATA_DIR.set(dir);
 }
 
+/// True for a `console` run with its own data folder (not the service).
+pub fn console_mode() -> bool {
+    CONSOLE_DATA_DIR.get().is_some()
+}
+
 pub fn data_dir() -> PathBuf {
     if let Some(d) = CONSOLE_DATA_DIR.get() {
         return d.clone();

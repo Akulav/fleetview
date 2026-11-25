@@ -162,7 +162,7 @@ Configuration (`master/.env`, all optional):
 | `FLEETVIEW_AGENT_TARGET` | native / `x86_64-pc-windows-gnu` | Rust target for that build (native on Windows, cross-compiled elsewhere). |
 | `FLEETVIEW_CARGO` | `~/.cargo/bin/cargo` | Path to cargo, if it isn't there or on `PATH`. |
 | `FLEETVIEW_DATA_DIR` | `data` | Identity, PCs, jobs, uploaded installers, logs. **Back it up, keep it private.** |
-| `FLEETVIEW_EMANAGEMENT_URL` | — | e-Management URL for the agents' MoldSign signing bridge. Optional: it can also be set in **Settings** (saved in `master.settings.json`, where the desktop master kept it, so an imported desktop master brings it along). New installers and agent updates include it; existing PCs get it with **Agent settings**. |
+| `FLEETVIEW_EMANAGEMENT_URL` | — | e-Management URL for the agents' MoldSign signing bridge. Optional: it can also be set in **Settings** (saved in `master.settings.json`, where the desktop master kept it, so an imported desktop master brings it along). New installers and agent updates include it, and the master keeps it on every PC automatically: each agent is checked when it connects and fixed if it's missing or different (no restart when it already matches). |
 | `FLEETVIEW_MAX_UPLOAD_MB` | `2048` | Largest installer accepted. |
 | `FLEETVIEW_PARALLEL_TRANSFERS` | `4` | PCs receiving a file at the same time. |
 

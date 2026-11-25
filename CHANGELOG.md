@@ -24,6 +24,13 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   it kept the URL in `master.settings.json`, which the web master ignored unless `FLEETVIEW_EMANAGEMENT_URL`
   was set. The saved value is now used, shown and editable in Settings, and **Agent settings** can push it to
   PCs that are missing it.
+- **Agents are kept in sync with the master's e-Management URL automatically:** on every connect (and for all
+  online PCs when it changes in Settings) the master sends it; a PC that already has it changes nothing, one
+  that lacks it or has another gets it and restarts once. Each PC's page shows the result ("MoldSign bridge"),
+  the list flags PCs it couldn't fix, and **Maintenance → Show agent settings** reads the setting on every PC.
+- **Agent settings** is also on each PC's page.
+- A `console`-mode agent (development, tests) no longer restarts the installed agent service on this PC when a
+  setting changes.
 
 ### Changed
 - **The master is now a Node.js web app** (`master/`, no dependencies), meant to run at
