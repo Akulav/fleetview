@@ -6,6 +6,19 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
 
 ## [0.6.0] - unreleased
 
+### Added — password vault and two-step sign-in
+- **Passwords tab:** a zero-knowledge password vault (PBKDF2-SHA256 600k → AES-256-GCM in the browser; the
+  server stores only ciphertext and rejects anything else). Folder tree, instant search (Ctrl+K), favorites and
+  recently used, one-click copy with a 30-second clipboard clear, password generator, add / edit / move / delete,
+  "connect" for servers (.rdp file or ssh command, never the password), auto-lock after 5 minutes, encrypted
+  backup and restore, unencrypted CSV export behind the master password, change master password, metadata-only
+  activity log. Works on phones.
+- **Import from KeePassXC** in the browser: `.kdbx` (KDBX 4 with Argon2d/id or AES-KDF, AES-256 or ChaCha20)
+  and CSV exports, with a preview and duplicate skipping. Argon2, BLAKE2b, ChaCha20 and the KDBX reader are
+  written here (no third-party code) and tested against Node's own implementations and a real KeePassXC file.
+- **Two-step sign-in (TOTP)** in Settings → Security with a QR code; required for the vault. Codes work once;
+  turning 2FA on or off signs out other sessions; failures count toward the sign-in lockout.
+
 ### Changed
 - **The master is now a Node.js web app** (`master/`, no dependencies), meant to run at
   https://fleetview.akulav.com behind an HTTPS proxy, configured with `.env`. It speaks the same agent protocol,

@@ -11,7 +11,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/unit.test.js",
+    "test": "node --test test/unit.test.js test/vault.test.js",
     "test:e2e": "node --test test/e2e.test.js",
     "hash-password": "node scripts/hash-password.js",
     "import-desktop-master": "node scripts/import-desktop-master.js"

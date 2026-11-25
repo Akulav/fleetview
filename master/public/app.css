@@ -264,3 +264,93 @@ h3 { margin: 0 0 12px; font-size: 15px; }
   .brand small, .who { display: none; }
 }
 .build-log { background: var(--surface-2); border-radius: 8px; padding: 10px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 10px 0 0; font-size: 12px; }
+
+/* ---- two-step sign-in ---- */
+.code-input { max-width: 140px; letter-spacing: 0.25em; font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; }
+.qr { display: inline-block; padding: 8px; background: #fff; border-radius: 12px; margin: 6px 0 10px; }
+.qr svg { display: block; width: 200px; height: 200px; }
+.secret { font-size: 15px; padding: 10px 12px; background: var(--surface-2); border-radius: 9px; display: inline-block; user-select: all; }
+.steps { padding-left: 18px; margin: 6px 0; }
+details > summary { cursor: pointer; }
+
+/* ---- password vault ---- */
+.vault-gate { max-width: 460px; margin: 24px auto; text-align: left; }
+.vault-gate h2 { margin: 6px 0 6px; font-size: 20px; letter-spacing: -0.01em; }
+.gate-icon { font-size: 34px; }
+.vault { display: grid; grid-template-columns: 240px minmax(0, 1fr) minmax(0, 380px); gap: 14px; align-items: start; }
+.vault-groups { padding: 8px; position: sticky; top: 76px; max-height: calc(100vh - 100px); overflow: auto; }
+.group-item { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 7px 10px; border-radius: 8px; cursor: pointer; color: var(--text); text-align: left; }
+.group-item:hover { background: var(--surface-2); }
+.group-item.active { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; }
+.group-item .gi { width: 18px; text-align: center; opacity: .8; }
+.group-item .gname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-item .gcount { font-size: 12px; color: var(--text-faint); }
+.group-sep { height: 1px; background: var(--border); margin: 6px 4px; }
+.group-actions { flex-wrap: wrap; gap: 4px; padding: 6px 4px 2px; }
+.vault-main { min-width: 0; }
+.vault-search { margin-bottom: 10px; padding: 11px 14px; font-size: 15px; border-radius: 12px; }
+.vault-list { overflow: hidden; }
+.entry { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--border); cursor: pointer; }
+.entry:first-child { border-top: 0; }
+.entry:hover { background: var(--surface-2); }
+.entry.active { background: var(--accent-soft); }
+.entry .grow { flex: 1; min-width: 0; }
+.entry .etitle { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-strong); font-weight: 700; flex: none; }
+.avatar.big { width: 46px; height: 46px; font-size: 20px; border-radius: 13px; }
+.vault-detail { padding: 18px; position: sticky; top: 76px; max-height: calc(100vh - 100px); overflow: auto; }
+.detail-close { float: right; display: none; }
+.detail-head { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
+.detail-head h2 { margin: 0; font-size: 18px; word-break: break-word; }
+.fields { display: grid; gap: 8px; }
+.field-row { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "label actions" "value actions"; align-items: center; background: var(--surface-2); border-radius: 10px; padding: 8px 10px; }
+.field-row .flabel { grid-area: label; }
+.field-row .fval { grid-area: value; word-break: break-all; }
+.field-row .factions { grid-area: actions; display: flex; gap: 2px; }
+.flabel { font-size: 12px; color: var(--text-faint); }
+.notes { margin-top: 10px; }
+.notes pre { white-space: pre-wrap; word-break: break-word; background: var(--surface-2); border-radius: 10px; padding: 10px; margin: 4px 0 0; font: inherit; }
+.connect { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: var(--surface-2); border-radius: 10px; padding: 8px 10px; }
+.connect code { flex: 1; min-width: 0; word-break: break-all; }
+.strength { height: 5px; border-radius: 9px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
+.strength i { display: block; height: 100%; width: 0; background: var(--bad); transition: width .2s; }
+.strength[data-level="ok"] i { background: var(--warn); }
+.strength[data-level="strong"] i { background: var(--ok); }
+.gen { margin-top: 8px; gap: 12px; flex-wrap: wrap; }
+.num { width: 64px !important; padding: 4px 6px !important; }
+.check.inline { display: inline-flex; margin: 0; gap: 6px; align-items: center; }
+.preview { padding: 8px 12px; max-height: 220px; overflow: auto; }
+.preview .row { padding: 4px 0; border-top: 1px solid var(--border); }
+.preview .row:first-child { border-top: 0; }
+.menu { position: relative; }
+.menu > summary { list-style: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; min-width: 260px; padding: 6px; display: grid; }
+.menu-item { border: 0; background: none; text-align: left; padding: 9px 10px; border-radius: 8px; cursor: pointer; color: var(--text); }
+.menu-item:hover { background: var(--surface-2); }
+@media (max-width: 1100px) {
+  .vault { grid-template-columns: 200px minmax(0, 1fr); }
+  .vault-detail { position: fixed; inset: auto 0 0 0; top: auto; max-height: 75vh; z-index: 35; border-radius: 16px 16px 0 0; display: none; box-shadow: 0 -12px 40px rgba(0,0,0,.25); }
+  .vault-detail.open { display: block; }
+  .detail-close { display: inline-flex; }
+}
+@media (max-width: 700px) {
+  .vault { grid-template-columns: 1fr; }
+  .vault-groups { position: static; max-height: none; display: flex; gap: 4px; overflow-x: auto; padding: 6px; }
+  .vault-groups .group-item { width: auto; white-space: nowrap; }
+  .vault-groups .group-sep, .vault-groups .group-actions { display: none; }
+  .page-head .btn { padding: 7px 10px; }
+}
+@media (max-width: 1100px) {
+  .who { display: none; }
+  .topbar { gap: 12px; padding: 0 14px; }
+  .tab { padding: 8px 9px; }
+}
+@media (max-width: 700px) {
+  .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; row-gap: 6px; }
+  .topbar .brand { font-size: 15px; }
+  .topbar .spacer { display: none; }
+  .tabs { order: 10; width: 100%; overflow-x: auto; }
+  .topbar .btn { padding: 6px 10px; font-size: 13px; }
+}

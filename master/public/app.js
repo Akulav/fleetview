@@ -206,6 +206,8 @@ function showLogin() {
   const err = h("div", { class: "err" });
   const user = h("input", { type: "text", autocomplete: "username", value: "admin" });
   const pw = h("input", { type: "password", autocomplete: "current-password" });
+  const code = h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "123456", class: "code-input" });
+  const codeRow = h("div", { class: "hidden" }, h("label", { class: "field" }, "Code from your authenticator app"), code);
   const btn = h("button", { class: "btn primary big", type: "submit" }, "Sign in");
   const form = h(
     "form",
@@ -215,7 +217,15 @@ function showLogin() {
         btn.disabled = true;
         err.textContent = "";
         try {
-          S.user = (await api("POST", "/api/login", { user: user.value, password: pw.value })).user;
+          const r = await api("POST", "/api/login", { user: user.value, password: pw.value, code: code.value.trim() || undefined });
+          if (r.need_code) {
+            codeRow.classList.remove("hidden");
+            btn.disabled = false;
+            btn.textContent = "Verify";
+            setTimeout(() => code.focus(), 0);
+            return;
+          }
+          S.user = r.user;
           await loadState();
           connectEvents();
         } catch (ex) {
@@ -228,6 +238,7 @@ function showLogin() {
     user,
     h("label", { class: "field" }, "Password"),
     pw,
+    codeRow,
     err,
     h("div", { style: { marginTop: "12px" } }, btn),
   );
@@ -269,6 +280,7 @@ function renderShell() {
         {
           class: "btn ghost small",
           onclick: async () => {
+            lockVault();
             await api("POST", "/api/logout").catch(() => {});
             showLogin();
           },
@@ -289,7 +301,7 @@ function renderTabs() {
   const running = [...S.jobs.values()].filter((j) => ["queued", "preparing", "sending", "installing", "running"].some((s) => j.counts[s])).length;
   const tab = (id, label, count) =>
     h("button", { class: `tab${S.view === id ? " active" : ""}`, onclick: () => go(id) }, label, count ? h("span", { class: "count" }, count) : null);
-  put(nav, tab("computers", "Computers"), tab("activity", "Activity", running), tab("settings", "Settings"));
+  put(nav, tab("computers", "Computers"), tab("vault", "Passwords"), tab("activity", "Activity", running), tab("settings", "Settings"));
 }
 
 function go(view) {
@@ -304,6 +316,20 @@ function renderMain(full = false) {
   if (S.view === "computers") return renderComputers(main, full);
   if (S.view === "activity") return renderActivity(main);
   if (S.view === "settings") return renderSettings(main, full);
+  if (S.view === "vault" && full) return renderVaultView(main);
+}
+
+// The password vault lives in its own module (public/vault/ui.js), loaded on
+// first use. It only ever sends ciphertext to the server.
+let vaultModule = null;
+async function renderVaultView(main) {
+  main.dataset.view = "vault";
+  vaultModule ??= await import("./vault/ui.js");
+  if (S.view !== "vault") return;
+  vaultModule.renderVault(main, { h, put, api, toast, fail, openDrawer, closeDrawer, openSecurity: () => go("settings") });
+}
+function lockVault() {
+  vaultModule?.lockVault("signed out");
 }
 
 // -------------------------------------------------------------- computers --
@@ -1358,6 +1384,67 @@ function importCard() {
   );
 }
 
+// ---- Security: two-step sign-in (TOTP) ----
+function securityCard() {
+  const card = h("div", { class: "card card-pad", style: { marginTop: "16px" } });
+  const paint = async () => {
+    let me;
+    try {
+      me = await api("GET", "/api/me");
+    } catch {
+      return;
+    }
+    const pw = h("input", { type: "password", autocomplete: "current-password", placeholder: "Console password" });
+    const code = h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "Code", class: "code-input" });
+    if (me.totp_enabled) {
+      put(
+        card,
+        h("h3", {}, "Two-step sign-in ", h("span", { class: "pill ok" }, "On")),
+        h("p", { class: "sub" }, "Signing in needs your password and a code from your authenticator app. The password vault requires it."),
+        h("details", {}, h("summary", { class: "sub" }, "Turn it off…"),
+          h("div", { class: "row", style: { marginTop: "10px", flexWrap: "wrap" } }, pw, code,
+            h("button", { class: "btn danger", onclick: async () => {
+              if (!confirm("Turn off two-step sign-in? The password vault will be unavailable until you turn it on again.")) return;
+              try { await api("POST", "/api/2fa/disable", { password: pw.value, code: code.value }); toast("Two-step sign-in is off"); paint(); } catch (e) { fail(e); }
+            } }, "Turn off"))),
+      );
+      return;
+    }
+    put(
+      card,
+      h("h3", {}, "Two-step sign-in ", h("span", { class: "pill warn" }, "Off")),
+      h("p", { class: "sub" }, "Protects the console with a 6-digit code from an authenticator app (Microsoft Authenticator, Google Authenticator, Aegis, 1Password…). Required for the password vault."),
+      h("div", { class: "row", style: { flexWrap: "wrap" } }, pw,
+        h("button", { class: "btn primary", onclick: async () => {
+          let r;
+          try { r = await api("POST", "/api/2fa/setup", { password: pw.value }); } catch (e) { return fail(e); }
+          const { qrSvg } = await import("./qr.js");
+          const confirmCode = h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "123456", class: "code-input" });
+          put(
+            card,
+            h("h3", {}, "Set up two-step sign-in"),
+            h("ol", { class: "steps" },
+              h("li", {}, "Open your authenticator app and add an account by scanning this code:"),
+            ),
+            h("div", { class: "qr" }, qrSvg(r.uri, 4)),
+            h("p", { class: "sub" }, "Can't scan? Enter this key by hand (time-based, 6 digits):"),
+            h("div", { class: "secret mono" }, r.secret.replace(/(.{4})/g, "$1 ").trim()),
+            h("p", { class: "sub" }, "On this phone? ", h("a", { href: r.uri }, "Add to authenticator")),
+            h("label", { class: "field" }, "Then type the code the app shows"),
+            h("div", { class: "row" }, confirmCode,
+              h("button", { class: "btn primary", onclick: async () => {
+                try { await api("POST", "/api/2fa/confirm", { code: confirmCode.value }); toast("Two-step sign-in is on"); paint(); } catch (e) { fail(e); }
+              } }, "Turn on"),
+              h("button", { class: "btn ghost", onclick: paint }, "Cancel")),
+          );
+          setTimeout(() => confirmCode.focus(), 0);
+        } }, "Set up…")),
+    );
+  };
+  paint();
+  return card;
+}
+
 function renderSettings(main, full) {
   if (!full && main.dataset.view === "settings") return;
   main.dataset.view = "settings";
@@ -1407,6 +1494,7 @@ function renderSettings(main, full) {
         h("p", { class: "sub", style: { marginTop: "12px" } }, "These come from the master's .env file (see README)."),
       ),
     ),
+    securityCard(),
     importCard(),
     h(
       "div",

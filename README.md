@@ -54,6 +54,72 @@ Push silent installers to one PC, a few, or all of them, and see each PC's resul
   change of the agent's master address.
 - **Tray icon** on every PC that shows the agent's state: connected, searching
   (offline), installing, screen being viewed.
+- **Password vault** (Passwords tab): your team's passwords, reachable from
+  anywhere, encrypted in the browser so the server only ever stores ciphertext.
+  Import from KeePassXC (`.kdbx` or `.csv`), folders, instant search, one-click
+  copy, generator, encrypted backups. See [the security model](#-password-vault).
+
+## 🔐 Password vault
+
+**Zero-knowledge.** The vault is encrypted and decrypted only in your browser,
+with a *master password* that is separate from the console sign-in and never
+leaves the page:
+
+| Step | How |
+|---|---|
+| Master password → key-encryption key | PBKDF2-SHA256, **600 000** iterations, 16-byte random salt (WebCrypto) |
+| Vault key | random 256-bit key, wrapped with AES-256-GCM under the key-encryption key |
+| Vault contents (all entries, folders, notes) | one JSON document, AES-256-GCM under the vault key, fresh 96-bit IV per save |
+| What the server stores (`data/vault.json`) | salt, iteration count, IVs and ciphertext — nothing else. The API rejects any upload that isn't exactly that shape. |
+
+Changing the master password re-wraps the vault key (the data stays as is).
+Forgetting it means the vault can't be opened; there is no recovery by design.
+Restore an encrypted backup or delete the vault and start over.
+
+**Who can reach it.** The Passwords tab only works for sessions confirmed with
+**two-step sign-in** (Settings → Security: a TOTP code from Microsoft/Google
+Authenticator, Aegis, 1Password…). Turning 2FA on or off signs out every other
+session. Sign-in failures (password or code) lock the address out for 10 minutes
+after 8 tries. The session cookie is `HttpOnly`, `SameSite=Strict` and `Secure`
+on HTTPS. Every change needs a custom header (CSRF guard). The pages run under a
+strict Content-Security-Policy (`script-src 'self'`, no inline code, no third-party
+code at all), with HSTS on HTTPS.
+
+**In the browser.** The vault locks after **5 minutes** without activity, on
+sign-out and on page reload (the key and plaintext are dropped from memory, open
+vault drawers close). Copied passwords are cleared from the clipboard after
+**30 seconds**. "Connect" on server entries builds an `.rdp` file or an `ssh`
+command with the address and user name only, never the password. Only random
+entry ids (no names) are kept in the browser's storage, for "Recently used".
+
+**Import.** `.kdbx` files (KDBX 4: Argon2d/Argon2id or AES-KDF, AES-256 or
+ChaCha20, password-only) are opened in a Web Worker in the browser. The KeePass
+password is typed there and never sent. KeePassXC CSV exports
+(`Group,Title,Username,Password,URL,Notes`) work too; delete the CSV afterwards,
+it isn't encrypted. Both show a preview (counts, folders, first entries) before
+anything is saved, keep the folder tree, and can skip duplicates.
+
+**Backups and export.** *Download encrypted backup* gives the ciphertext record
+(it opens only with the master password it was made with). *Restore a backup* and
+*Delete the vault* need your console password **and** an authenticator code.
+*Export as CSV* is unencrypted, so it asks for the master password again and warns
+first.
+
+**Audit log.** Unlocks, failed unlocks, saves, imports (count only), exports,
+backups, restores and resets are logged with time, user and IP address. Entry
+names and secrets are never logged (*More → Activity log*).
+
+**What it doesn't protect against:** someone who controls the server (or
+FleetView's code) could ship modified JavaScript that captures the master
+password the next time you unlock. That's true of every web-based password
+manager; keep the server and its admin access tight. A compromised PC (keylogger)
+can capture anything typed on it.
+
+**Proof.** `npm test` includes a check that stores a vault full of marker strings
+through the real API, then searches every file in the master's data folder: none
+contain them, and the stored record still opens in the browser code. It also
+cross-checks the Argon2, BLAKE2b and ChaCha20 code against Node's own and opens
+a real `keepassxc-cli` database. All test data is fake.
 
 ## 🗂️ Project layout
 

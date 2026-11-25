@@ -12,6 +12,7 @@ import { ACTIONS, listScript, parseList, validate as validateAccount, actionTitl
 import { agentConfigJson, importIdentity } from "./identity.js";
 import { compareVersions, withTrailer } from "./agentpkg.js";
 import { handleAgentUpgrade } from "./ws.js";
+import { VaultStore } from "./vault.js";
 
 const PUBLIC = join(APP_ROOT, "public");
 const TYPES = {
@@ -32,6 +33,7 @@ class HttpError extends Error {
 }
 
 export function startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs }) {
+  const vault = new VaultStore(config.dataDir);
   const clients = new Set();
   const broadcast = (event, data) => {
     const line = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -51,12 +53,112 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
 
   const audit = (user, what) => logs.write(`[${user}] ${what}`);
 
-  async function api(req, res, url, user) {
+  async function api(req, res, url, user, sess, ip) {
     const m = req.method;
     const p = url.pathname;
     const seg = p.split("/").filter(Boolean).slice(1); // after "api"
 
-    if (p === "/api/me" && m === "GET") return json(res, { user });
+    if (p === "/api/me" && m === "GET") return json(res, { user, mfa: sess.mfa, totp_enabled: auth.totpEnabled });
+
+    // ---- two-step sign-in (TOTP) ----
+    if (p === "/api/2fa/setup" && m === "POST") {
+      if (auth.totpEnabled) throw new HttpError(409, "two-step sign-in is already on");
+      const b = await body(req);
+      try {
+        auth.stepUp(ip, b.password);
+      } catch (e) {
+        throw new HttpError(401, e.message);
+      }
+      return json(res, auth.beginTotp());
+    }
+    if (p === "/api/2fa/confirm" && m === "POST") {
+      const b = await body(req);
+      let token;
+      try {
+        token = auth.confirmTotp(ip, b.code);
+      } catch (e) {
+        throw new HttpError(400, e.message);
+      }
+      audit(user, "turned on two-step sign-in");
+      res.setHeader("Set-Cookie", auth.cookie(token, config.sessionHours * 3600));
+      return json(res, { ok: true });
+    }
+    if (p === "/api/2fa/disable" && m === "POST") {
+      const b = await body(req);
+      let token;
+      try {
+        token = auth.disableTotp(ip, b.password, b.code);
+      } catch (e) {
+        throw new HttpError(401, e.message);
+      }
+      audit(user, "turned off two-step sign-in");
+      res.setHeader("Set-Cookie", auth.cookie(token, config.sessionHours * 3600));
+      return json(res, { ok: true });
+    }
+
+    // ---- password vault (ciphertext only; see src/vault.js) ----
+    if (seg[0] === "vault") {
+      if (!sess.mfa) {
+        throw new HttpError(403, auth.totpEnabled ? "sign in again with your authenticator code to open the vault" : "turn on two-step sign-in (Settings → Security) to use the vault");
+      }
+      const ev = (event, extra = {}) => vault.audit(event, { user, ip, ...extra });
+      if (seg.length === 1 && m === "GET") return json(res, { exists: vault.exists, ...(vault.get() ?? {}) });
+      if (seg.length === 1 && m === "PUT") {
+        const b = await body(req, 40 * 1048576);
+        let revision;
+        try {
+          revision = vault.put(b.record, b.base_revision ?? null);
+        } catch (e) {
+          throw new HttpError(e.status ?? 400, e.message);
+        }
+        ev(b.base_revision == null ? "created" : "saved");
+        return json(res, { revision });
+      }
+      if (seg[1] === "audit" && m === "GET") return json(res, { events: vault.recentAudit() });
+      if (seg[1] === "audit" && m === "POST") {
+        // Events only the browser knows about. Metadata only.
+        const b = await body(req);
+        if (!["unlocked", "unlock_failed", "locked", "imported", "exported_plain", "password_changed"].includes(b.event)) {
+          throw new HttpError(400, "unknown vault event");
+        }
+        ev(b.event, { count: Number.isInteger(b.count) ? b.count : undefined });
+        return json(res, { ok: true });
+      }
+      if (seg[1] === "backup" && m === "GET") {
+        const v = vault.get();
+        if (!v) throw new HttpError(404, "there is no vault yet");
+        ev("backup_downloaded");
+        const out = JSON.stringify({ fleetview_vault_backup: 1, exported_at: new Date().toISOString(), record: v.record }, null, 1);
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="fleetview-vault-${new Date().toISOString().slice(0, 10)}.json"`,
+          "Cache-Control": "no-store",
+        });
+        return res.end(out);
+      }
+      if ((seg[1] === "restore" || seg[1] === "reset") && m === "POST") {
+        const b = await body(req, 40 * 1048576);
+        try {
+          auth.stepUp(ip, b.password, b.code);
+        } catch (e) {
+          throw new HttpError(401, e.message);
+        }
+        if (seg[1] === "reset") {
+          vault.reset();
+          ev("reset");
+          return json(res, { ok: true });
+        }
+        try {
+          vault.reset();
+          vault.put(b.record, null);
+        } catch (e) {
+          throw new HttpError(e.status ?? 400, e.message);
+        }
+        ev("backup_restored");
+        return json(res, { ok: true, revision: vault.get().revision });
+      }
+      throw new HttpError(404, "not found");
+    }
     if (p === "/api/logout" && m === "POST") {
       res.setHeader("Set-Cookie", auth.cookie("", 0));
       return json(res, { ok: true });
@@ -391,20 +493,21 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
         if (req.method !== "GET" && req.headers["x-fleetview"] !== "1") throw new HttpError(403, "missing X-FleetView header");
         if (url.pathname === "/api/login" && req.method === "POST") {
           const b = await body(req);
-          let token;
+          let r;
           try {
-            token = auth.login(ip, b.user, b.password);
+            r = auth.login(ip, b.user, b.password, b.code);
           } catch (e) {
             logs.write(`login failed for "${String(b.user).slice(0, 40)}" from ${ip}`);
             throw new HttpError(401, e.message);
           }
-          logs.write(`[${b.user}] signed in from ${ip}`);
-          res.setHeader("Set-Cookie", auth.cookie(token, config.sessionHours * 3600));
+          if (r.needCode) return json(res, { need_code: true });
+          logs.write(`[${b.user}] signed in from ${ip}${auth.totpEnabled ? " (with code)" : ""}`);
+          res.setHeader("Set-Cookie", auth.cookie(r.token, config.sessionHours * 3600));
           return json(res, { user: b.user });
         }
-        const user = auth.check(cookies(req).fv_session);
-        if (!user) throw new HttpError(401, "sign in first");
-        return await api(req, res, url, user);
+        const sess = auth.session(cookies(req).fv_session);
+        if (!sess) throw new HttpError(401, "sign in first");
+        return await api(req, res, url, sess.user, sess, ip);
       }
       return serveStatic(req, res, url.pathname);
     } catch (e) {
@@ -455,7 +558,7 @@ function serveStatic(req, res, pathname) {
     "Content-Type": TYPES[extname(file)] ?? "application/octet-stream",
     "Cache-Control": "no-cache", // small files; never serve a stale UI after an upgrade
     "Content-Security-Policy":
-      "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   });
   if (req.method === "HEAD") return res.end();
   createReadStream(file).pipe(res);

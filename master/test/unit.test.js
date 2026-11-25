@@ -133,7 +133,7 @@ test("auth: password hash and session tokens", () => {
   const dir = mkdtempSync(join(tmpdir(), "fv-auth-"));
   try {
     const a = new Auth({ dataDir: dir, adminUser: "admin", adminPasswordHash: h, sessionHours: 1, secureCookies: true }, () => {});
-    const tok = a.login("1.2.3.4", "admin", "correct horse battery");
+    const tok = a.login("1.2.3.4", "admin", "correct horse battery").token;
     assert.equal(a.check(tok), "admin");
     assert.equal(a.check(tok.slice(0, -2) + "xx"), null);
     assert.throws(() => a.login("1.2.3.4", "admin", "nope"), /wrong/);
