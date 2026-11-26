@@ -15,6 +15,7 @@ import { Logs } from "./logs.js";
 import { startWeb } from "./web.js";
 import { ConfigSync } from "./configsync.js";
 import { ScriptLibrary, runAutoScripts } from "./scripts.js";
+import { Metrics, startSpeedSchedule } from "./metrics.js";
 
 export async function startMaster(overrides = {}, { quiet = false } = {}) {
   const config = { ...loadConfig(), ...overrides };
@@ -37,7 +38,10 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
   const library = new InstallerLibrary(config.dataDir);
   const pkg = new AgentPackage(config.dataDir);
   const builder = new AgentBuilder({ config, pkg, log });
-  const jobs = new JobEngine({ config, hub, library, pkg, log });
+  const metrics = new Metrics(config.dataDir);
+  hub.on("telemetry", (id, t) => metrics.sample(id, t.cpu_usage_pct, t.mem_total_mb ? (t.mem_used_mb / t.mem_total_mb) * 100 : NaN));
+  const jobs = new JobEngine({ config, hub, library, pkg, log, metrics });
+  const speedSchedule = startSpeedSchedule({ metrics, hub, jobs, log });
   const auth = new Auth(config, log);
   const configSync = new ConfigSync({ config, hub, jobs, log });
   const scripts = new ScriptLibrary(config.dataDir);
@@ -46,7 +50,7 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
   // job created while it is away simply waits for it.
   const autoDelay = config.autoScriptDelayMs ?? 60_000;
   hub.on("enrolled", (agentId) => setTimeout(() => runAutoScripts({ scripts, jobs, agentId, log }), autoDelay).unref?.());
-  const web = await startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync, scripts });
+  const web = await startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync, scripts, metrics });
   // A prebuilt exe (FLEETVIEW_AGENT_EXE) takes the place of building.
   if (config.agentBuild && !pkg.envPath) builder.ensure();
   log(`${identity.masterName} ready — certificate ${identity.fingerprint.slice(0, 16)}…`);
@@ -57,6 +61,7 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
     jobs,
     configSync,
     scripts,
+    metrics,
     library,
     pkg,
     builder,
@@ -70,6 +75,8 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
       discovery?.close();
       jobs.close();
       scripts.close();
+      speedSchedule.close();
+      metrics.close();
       hub.close();
     },
   };

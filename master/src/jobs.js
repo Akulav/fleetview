@@ -27,6 +27,7 @@ import { taskScript, TASKS } from "./tasks.js";
 import { actionScript, ACTIONS } from "./accounts.js";
 import { renameScript } from "./rename.js";
 import { toggleScript, applyToggle } from "./startup.js";
+import { parseRecord, cleanSnapshot, cleanSpeed } from "./metrics.js";
 
 const CHUNK = 256 * 1024;
 /** Unacknowledged bytes allowed in flight per transfer. */
@@ -45,7 +46,7 @@ const DONE = new Set(["succeeded", "failed", "skipped", "cancelled"]);
 const newId = () => crypto.randomBytes(16).toString("hex");
 
 export class JobEngine extends EventEmitter {
-  constructor({ config, hub, library, pkg, log }) {
+  constructor({ config, hub, library, pkg, log, metrics = null }) {
     super();
     this.setMaxListeners(0);
     this.config = config;
@@ -53,6 +54,7 @@ export class JobEngine extends EventEmitter {
     this.library = library;
     this.pkg = pkg;
     this.log = log;
+    this.metrics = metrics;
     this.file = new JsonFile(join(config.dataDir, "jobs.json"), []);
     this.installing = new Set(); // agent ids with an install in progress
     /** job id → password for account jobs. Memory only: never in jobs.json. */
@@ -64,6 +66,7 @@ export class JobEngine extends EventEmitter {
         if (ACTIVE.has(t.state)) {
           Object.assign(t, { state: "failed", message: "the master restarted while this was running — result unknown; check the PC's software list", finished_at: new Date().toISOString() });
         }
+        for (const st of t.steps ?? []) if (st.state === "running") Object.assign(st, { state: "failed", message: "the master restarted while this step was running" });
       }
     }
     hub.on("online", () => this.pump());
@@ -97,6 +100,9 @@ export class JobEngine extends EventEmitter {
    *   config    { updates: [{ key, value }] }
    *   rename    { names: { [agentId]: newName }, restart, delay_sec }
    *   startup   { kind, scope, sid, name, task_path, enable }  (see startup.js)
+   *   batch     { steps: [step], stop_on_fail }  — steps run in order on each PC:
+   *             { type: "task", task, options, label } | { type: "saved_script", script_id, script, label }
+   *             | { type: "mark_cleaned", note, label }
    */
   create({ kind, title, detail = "", agentIds, payload, waitOffline = false, by = "", secret = null }) {
     const ids = [...new Set(agentIds)].filter((id) => this.hub.get(id));
@@ -151,6 +157,8 @@ export class JobEngine extends EventEmitter {
     for (const t of Object.values(job.targets)) {
       if (t.state === "failed" || t.state === "skipped" || t.state === "cancelled") {
         Object.assign(t, { state: "queued", message: "", progress: 0, attempts: 0, exit_code: null, output: "", finished_at: null });
+        // A batch picks up at the first step that did not succeed.
+        for (const st of t.steps ?? []) if (st.state !== "succeeded") Object.assign(st, { state: "queued", message: "" });
         n++;
       }
     }
@@ -473,6 +481,8 @@ export class JobEngine extends EventEmitter {
         msg = { SetConfig: { command_id: commandId, updates: job.payload.updates } };
         ms = COMMAND_RESULT_MS;
         break;
+      case "batch":
+        return this.runBatch(job, agentId, t);
       case "message":
         this.hub.send(agentId, { NotifyUser: { title: job.payload.title, body: job.payload.body } });
         return this.finish(job, t, "succeeded", "shown to the user");
@@ -544,6 +554,7 @@ export class JobEngine extends EventEmitter {
       const output = clip([r.stdout, r.stderr && `[stderr]\n${r.stderr}`].filter(Boolean).join("\n"));
       if (job.kind === "uninstall" && r.success) this.hub.send(agentId, "RequestSoftware");
       if (r.success) this.afterSuccess(job, agentId);
+      if (job.kind === "task") this.record(job.payload.task, agentId, r);
       this.finish(job, t, r.success ? "succeeded" : "failed", summarize(job, r), { exit_code: r.exit_code, output });
     } catch (e) {
       this.finish(job, t, "failed", e.message);
@@ -564,6 +575,120 @@ export class JobEngine extends EventEmitter {
       this.hub.save();
       this.hub.changed(a);
     }
+  }
+
+  /** Keep what a performance snapshot or speed test measured. */
+  record(task, agentId, r) {
+    if (!this.metrics) return;
+    if (task === "perf_snapshot") {
+      const snap = cleanSnapshot(parseRecord(r.stdout, "FVPERF"));
+      if (snap) this.metrics.addSnapshot(agentId, snap);
+    } else if (task === "speed_test") {
+      const sp = cleanSpeed(parseRecord(r.stdout, "FVSPEED"));
+      if (sp) this.metrics.addSpeed(agentId, sp);
+    } else return;
+    const a = this.hub.get(agentId);
+    if (a) this.hub.changed(a);
+  }
+
+  /** Mark a PC as cleaned (by a person, or as the last step of a batch). */
+  markCleaned(agentId, by, note = "") {
+    const a = this.hub.get(agentId);
+    if (!a) return null;
+    a.cleaned = { at: new Date().toISOString(), by: String(by ?? ""), note: String(note ?? "").slice(0, 300) };
+    a.cleanings = [...(a.cleanings ?? []), a.cleaned].slice(-20);
+    this.hub.save();
+    this.hub.changed(a);
+    return a.cleaned;
+  }
+  unmarkCleaned(agentId) {
+    const a = this.hub.get(agentId);
+    if (!a?.cleaned) return false;
+    a.cleaned = null;
+    this.hub.save();
+    this.hub.changed(a);
+    return true;
+  }
+
+  /** Run a script on an online PC outside any job (scheduled measurements):
+   * resolves with the agent's result, rejects when offline or out of time. */
+  quiet(agentId, script, ms) {
+    const commandId = newId();
+    const result = this.waitResult(agentId, commandId, ms);
+    if (!this.hub.send(agentId, { RunPowerShell: { command_id: commandId, script } })) {
+      result.cancel();
+      return Promise.reject(new Error("the PC is offline"));
+    }
+    return result;
+  }
+
+  /** A batch on one PC: its steps one after another, each with its own result. */
+  async runBatch(job, agentId, t) {
+    const steps = job.payload.steps ?? [];
+    if (!t.steps || t.steps.length !== steps.length) t.steps = steps.map((s) => ({ label: s.label, state: "queued", message: "" }));
+    const outputs = t.output ? [t.output] : [];
+    this.save(job);
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      const st = t.steps[i];
+      if (st.state === "succeeded") continue;
+      const failedSoFar = t.steps.slice(0, i).some((x) => x.state === "failed");
+      if (failedSoFar && (job.payload.stop_on_fail || s.type === "mark_cleaned")) {
+        Object.assign(st, { state: "skipped", message: s.type === "mark_cleaned" ? "not marked: an earlier step failed" : "skipped: an earlier step failed" });
+        continue;
+      }
+      t.message = `step ${i + 1} of ${steps.length}: ${s.label}`;
+      Object.assign(st, { state: "running", message: "", started_at: new Date().toISOString() });
+      this.save(job);
+      if (s.type === "mark_cleaned") {
+        this.markCleaned(agentId, job.by, s.note);
+        Object.assign(st, { state: "succeeded", message: "marked as cleaned" });
+        continue;
+      }
+      let script, minutes;
+      try {
+        if (s.type === "task") ({ script, minutes } = taskScript(s.task, s.options));
+        else if (s.type === "saved_script") ({ script, minutes } = { script: s.script, minutes: 240 });
+        else throw new Error(`unknown step ${s.type}`);
+      } catch (e) {
+        Object.assign(st, { state: "failed", message: e.message });
+        continue;
+      }
+      const commandId = newId();
+      t.command_id = commandId;
+      const result = this.waitResult(agentId, commandId, (minutes + 10) * 60_000);
+      const pause = () => {
+        // Offline: the rest runs when the PC is back (or is skipped).
+        Object.assign(st, { state: "queued", message: "" });
+        t.state = job.wait_offline ? "waiting" : "queued";
+        t.output = outputs.join("\n\n");
+        this.save(job);
+        setImmediate(() => this.pump());
+      };
+      if (!this.hub.send(agentId, { RunPowerShell: { command_id: commandId, script } })) {
+        result.cancel();
+        return pause();
+      }
+      let r;
+      try {
+        r = await result;
+      } catch (e) {
+        if (e.offline) return pause();
+        Object.assign(st, { state: "failed", message: e.message });
+        outputs.push(`=== ${s.label}: ${e.message}`);
+        continue;
+      }
+      const like = s.type === "task" ? { kind: "task", payload: { task: s.task } } : { kind: "script", payload: { script_id: s.script_id } };
+      Object.assign(st, { state: r.success ? "succeeded" : "failed", message: summarize(like, r), exit_code: r.exit_code });
+      outputs.push(`=== ${s.label} (${r.success ? "done" : "failed"})\n${[r.stdout, r.stderr && `[stderr]\n${r.stderr}`].filter(Boolean).join("\n").trim()}`);
+      if (s.type === "task") this.record(s.task, agentId, r);
+    }
+    const failed = t.steps.filter((x) => x.state === "failed");
+    const done = t.steps.filter((x) => x.state === "succeeded").length;
+    const msg = failed.length
+      ? `${done} of ${steps.length} steps done — failed: ${failed.map((x) => x.label).join(", ")}`.slice(0, 300)
+      : `all ${steps.length} steps done`;
+    this.finish(job, t, failed.length ? "failed" : "succeeded", msg, { output: clip(outputs.join("\n\n")), exit_code: null });
   }
 
   /** Drop a job's password once no target can use it any more. */

@@ -41,6 +41,35 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
 - Tests: unit and API tests for all of the above (`test/manage.test.js`, including a PowerShell syntax check of
   every generated script) and end-to-end tests with the real agent.
 
+### Added — bulk changes, security, performance
+- **Apply** tab: pick changes (tasks, saved scripts, *mark as cleaned*), order them, pick computers (filters:
+  online, not cleaned, cleaned, search), run. Each PC runs the list in order as one action (`batch` job) with a
+  result per step; Retry resumes at the failed step. Ready-made lists: New PC setup, Clean-up, Secure, Health
+  check, Fix & install updates.
+- **Security baseline** task: every Defender module on (and the policies that disabled them removed), firewall,
+  SmartScreen, UAC, SMBv1/AutoRun/Guest off, RDP with NLA; attack surface reduction rules (standard / audit /
+  block all / leave), optional Controlled folder access; Defender left alone behind another antivirus.
+  **Security check** task (read-only).
+- **Adblocker in all browsers**: uBlock Origin Lite (Chrome, Edge, Brave) and uBlock Origin (Firefox) through
+  browser policies, and a task to remove it.
+- **Repair Windows Update** task.
+- **Cleaned** mark per PC (date, who, note, history), on the PC's page, in a run, or for the selection; a
+  *Not cleaned* filter.
+- **Performance history**: CPU/memory from telemetry (hourly 14 days, daily 6 months), **snapshots** (30 s CPU,
+  memory, commit, processes, boot time, top programs), **internet speed tests** (on demand or scheduled, one PC
+  at a time), and a before/after comparison around the cleaned mark, per PC and for the fleet.
+- **Accounts** separate people's accounts from Windows defaults and setup leftovers (`defaultuser0`).
+
+### Changed
+- **The PC page** is a wide panel with the computer list on the left (search, click, ↑/↓ or J/K, ◀ ▶) and
+  cards for the PC, performance, cleaning, internet, security and recent actions.
+- The Computers list shows the last internet speed and a *cleaned* badge.
+
+### Fixed
+- **Check / Install Windows updates failed with "The service cannot be started, either because it is disabled…"**
+  (0x80070422) on PCs where a debloat tool had disabled the update services: they are re-enabled (manual start,
+  as Windows ships them) before searching, and common error codes are explained.
+
 ### Fixed
 - New agent installers had no `emanagement_url` (so no MoldSign bridge) after moving from the desktop master:
   it kept the URL in `master.settings.json`, which the web master ignored unless `FLEETVIEW_EMANAGEMENT_URL`

@@ -57,6 +57,12 @@ Push silent installers to one PC, a few, or all of them, and see each PC's resul
 - **Saved scripts**: a library of PowerShell scripts (it starts with a
   conservative *debloat* example) to run on one PC, a selection or the whole
   fleet, or automatically once on every new PC.
+- **Apply changes**: one screen to run an ordered list of changes (security
+  baseline, adblocker in every browser, debloat, updates, any task or saved
+  script, *mark as cleaned*) on many PCs, with each step's result per PC.
+- **Performance and cleaning**: CPU/memory history, snapshots (incl. boot
+  time) and internet speed tests per PC, and a before/after comparison around
+  the day a PC was marked *cleaned*.
 - PowerShell as SYSTEM, messages to the logged-in user, screenshots (the user is
   notified), uninstall from a PC's program list, agent updates, and a remote
   change of the agent's master address.
@@ -358,6 +364,76 @@ for all users and from the image, turns off consumer features, tips and
 suggested apps (also for new users), and sets telemetry to the minimum the
 edition allows. It never touches the Store, winget, Defender, Windows Update,
 Edge or app frameworks.
+
+### Apply changes (many changes, many PCs)
+
+The **Apply** tab is one screen for bulk work: pick changes on the left
+(maintenance tasks, saved scripts, *Mark as cleaned*), put them in order in the
+middle (with their options), pick computers on the right (all, online, *not
+cleaned*, cleaned, search, tick), and **Run**. Each PC runs the list top to
+bottom as one action, and Activity shows each step's result per PC. **Retry**
+picks a PC up at the step that failed. *Mark as cleaned* only marks PCs whose
+earlier steps all succeeded, and *Restart / Shut down* must be the last step.
+Ready-made lists: **New PC setup**, **Clean-up**, **Secure**, **Health check**
+(changes nothing), **Fix & install updates**. The selection bar on Computers has
+**Apply changes** and **Mark cleaned** too.
+
+New maintenance tasks used there (and in Maintenance):
+
+- **Security baseline**: turns on every Microsoft Defender module (real-time,
+  behavior monitoring, downloads/attachments, scripts, cloud protection, block at
+  first sight, sample submission, PUA blocking, network protection) and removes
+  policies that switched them off; firewall on for all profiles; SmartScreen;
+  UAC (back on, and asking admins again); SMBv1, AutoRun and the Guest account
+  off; Remote Desktop requires NLA. Attack surface reduction rules: *standard*
+  blocks Microsoft's three standard-protection rules and only audits the rest
+  (Office macros keep working); *audit*, *block all* or *leave alone* are the
+  other choices. Controlled folder access is an option, off by default. When
+  another antivirus is active, Defender is passive and left alone. Tamper
+  Protection can't be set by script; the check reports it.
+- **Security check**: read-only; lists which of those are on (and BitLocker).
+- **Install adblocker in all browsers**: force-installs uBlock Origin Lite in
+  Chrome, Edge and Brave and uBlock Origin in Firefox through browser policies,
+  from the browsers' own stores, kept up to date. Policy entries others added
+  are kept; **Remove the adblocker policy** undoes it.
+- **Repair Windows Update**: re-enables update services that debloat tools
+  disabled (the `0x80070422` *"service cannot be started, either because it is
+  disabled…"* error), removes policies that block Windows Update (not on domain
+  PCs), stops using a WSUS server that no longer answers, resets the download
+  cache and catalog, then checks that a search works. **Check** and **Install
+  Windows updates** now re-enable disabled update services first and explain
+  common error codes.
+- **Performance snapshot** and **Internet speed test** (below).
+
+### Performance, cleaning and speed
+
+Each PC's page keeps its history: CPU and memory from the agent's regular
+reports (hourly for 14 days, daily for 6 months, as a 7-day chart),
+**snapshots** (30-second CPU average, memory and commit, processes, boot time
+from Windows' boot diagnostics, the programs using the most memory) and
+**internet speed tests** (latency, download, upload against Cloudflare's speed
+test, sized to stay around 10 seconds each way).
+
+**Mark as cleaned** (on the PC's page, in a run, or for the selection) records
+the date. The PC's page then compares the 7 days before with the time since
+(CPU and memory averages while it was on, boot time and process count from the
+snapshots around the mark), and the Apply tab shows that for every cleaned PC.
+Typical use: *Clean-up* (snapshot → debloat → temp files → mark), then a
+snapshot after a restart a few days later.
+
+Speed tests can also run on a schedule (Apply tab → Measurements): one PC at a
+time, since tests on the same line slow each other down, every 6 h to once a
+week. Results go to each PC's page and the Internet column, not to Activity.
+
+### The PC page
+
+Clicking a computer opens a wide page with the computer list on the left:
+search it, click another PC, or press **↑ / ↓** (or **J / K**, or ◀ ▶ in the
+header) to move between PCs. The Overview has cards for the PC, performance,
+cleaning, internet, security and recent actions. The **Accounts** tab separates
+people's accounts from Windows' own (*Windows default*: Administrator, Guest,
+DefaultAccount, WDAGUtilityAccount; *Setup leftover*: `defaultuser0` and the
+like).
 
 ## 🧪 Testing
 

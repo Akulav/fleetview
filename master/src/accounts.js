@@ -90,6 +90,7 @@ $list = @(Get-LocalUser | ForEach-Object {
     enabled = [bool]$_.Enabled
     admin = ($admins -contains $_.SID.Value)
     builtin = ($_.SID.Value -match '-(500|501|503|504)$')
+    default_kind = $(if ($_.SID.Value -match '-(500|501|503|504)$') { 'builtin' } elseif ($_.Name -match '^(defaultuser\d+|WsiAccount|defaultuser100000)$') { 'setup' } else { $null })
     last_logon = $(if ($_.LastLogon) { $_.LastLogon.ToUniversalTime().ToString('o') } else { $null })
     password_last_set = $(if ($_.PasswordLastSet) { $_.PasswordLastSet.ToUniversalTime().ToString('o') } else { $null })
     password_required = [bool]$_.PasswordRequired

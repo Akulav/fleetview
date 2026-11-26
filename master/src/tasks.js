@@ -2,15 +2,52 @@
 // or the whole fleet. Each script prints a short human summary and exits
 // non-zero when something needs attention, so Activity shows Done/Failed per PC.
 
+import { baselineScript, securityStatusScript, repairUpdatesScript, adblockScript, ASR_MODES } from "./hardening.js";
+import { perfScript, speedScript } from "./metrics.js";
+
 const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
 
 const UTF8 = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$ErrorActionPreference = 'Stop'";
 
+// Debloat tools and "privacy" scripts often disable the Windows Update
+// services; the Update Agent then fails with 0x80070422 ("The service cannot
+// be started, either because it is disabled..."). Re-enable them first, as
+// Windows ships them (manual start), and say so.
+const WU_SERVICES = String.raw`function Repair-WuServices {
+  foreach ($n in @('wuauserv', 'BITS', 'CryptSvc', 'TrustedInstaller', 'UsoSvc', 'DoSvc')) {
+    $s = Get-Service -Name $n -ErrorAction SilentlyContinue
+    if (-not $s -or [string]$s.StartType -ne 'Disabled') { continue }
+    & sc.exe config $n start= demand | Out-Null
+    if ($LASTEXITCODE -eq 0) { 'Service ' + $n + ' was DISABLED - set back to manual start.' }
+    else { 'Service ' + $n + ' is disabled and could not be re-enabled (sc.exe exit ' + $LASTEXITCODE + ').' }
+  }
+  try { Start-Service wuauserv -ErrorAction Stop } catch { 'Could not start the Windows Update service: ' + $_.Exception.Message }
+}
+function Show-WuPolicies {
+  $p = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+  $w = Get-ItemProperty $p -ErrorAction SilentlyContinue
+  $au = Get-ItemProperty "$p\AU" -ErrorAction SilentlyContinue
+  if ($w.DisableWindowsUpdateAccess -eq 1) { 'Policy DisableWindowsUpdateAccess=1 blocks Windows Update (run "Repair Windows Update").' }
+  if ($w.DoNotConnectToWindowsUpdateInternetLocations -eq 1) { 'Policy DoNotConnectToWindowsUpdateInternetLocations=1 blocks Windows Update (run "Repair Windows Update").' }
+  if ($au.UseWUServer -eq 1 -and $w.WUServer) { 'Updates come from the WSUS server ' + $w.WUServer + ' (policy), not from Microsoft.' }
+}
+Repair-WuServices
+Show-WuPolicies`;
+
 // Windows Update Agent COM API: works as SYSTEM, no module to install.
-const WU_SEARCH = String.raw`$session = New-Object -ComObject Microsoft.Update.Session
+const WU_SEARCH = String.raw`${WU_SERVICES}
+$session = New-Object -ComObject Microsoft.Update.Session
 $session.ClientApplicationID = 'FleetView'
 $searcher = $session.CreateUpdateSearcher()
-$found = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'").Updates`;
+try { $found = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Software'").Updates }
+catch {
+  $hr = '0x{0:X8}' -f $_.Exception.HResult
+  $why = @{ '0x80070422' = 'a Windows Update service is disabled'; '0x8024402C' = 'no connection to the update server (proxy/DNS)';
+    '0x80072EE2' = 'the update server timed out'; '0x80072EFD' = 'cannot reach the update server'; '0x8024401C' = 'the update server timed out';
+    '0x80244022' = 'the update server is unavailable (HTTP 503)'; '0x80240438' = 'no route to the update server (policy or firewall)' }[$hr]
+  'Searching for updates failed: ' + $(if ($why) { $why } else { $_.Exception.Message.Trim() }) + ' (' + $hr + '). Try "Repair Windows Update".'
+  exit 3
+}`;
 
 const REBOOT_PENDING = String.raw`function Test-RebootPending {
   (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or
@@ -64,6 +101,57 @@ for ($i = 0; $i -lt $ready.Count; $i++) {
 }
 if ($res.RebootRequired -or (Test-RebootPending)) { 'RESTART NEEDED to finish installing.' }
 exit $(if ($failed -gt 0) { 1 } else { 0 })`,
+  },
+  repair_updates: {
+    label: "Repair Windows Update",
+    group: "Windows Update",
+    help: "Re-enables Windows Update services that debloat tools disabled, removes policies that block Windows Update (not on domain PCs), switches away from a WSUS server that no longer answers, resets the download cache and catalog, then checks that searching works.",
+    minutes: 20,
+    script: () => `${UTF8}\n${repairUpdatesScript()}`,
+  },
+  security_baseline: {
+    label: "Security baseline (turn on all protection)",
+    group: "Security",
+    help: "Turns on every Microsoft Defender module (real-time, behavior, downloads, scripts, cloud protection, block at first sight, sample submission, PUA, network protection) and removes policies that turned them off; firewall on for all profiles; SmartScreen; UAC; SMBv1, AutoRun and Guest off; RDP requires NLA. Leaves Defender alone when another antivirus is active.",
+    minutes: 15,
+    options: { asr: "standard", controlled_folders: false },
+    script: (o) => baselineScript(o),
+  },
+  security_status: {
+    label: "Security check",
+    group: "Security",
+    help: "Read-only: shows which protections are on (Defender modules, Tamper Protection, signatures, firewall, SmartScreen, UAC, SMBv1, AutoRun, Guest, BitLocker). Failed = something is off.",
+    minutes: 5,
+    failMeaning: "some protection is off (see details)",
+    script: () => securityStatusScript(),
+  },
+  adblock: {
+    label: "Install adblocker in all browsers",
+    group: "Browsers",
+    help: "Force-installs uBlock Origin Lite in Chrome, Edge and Brave and uBlock Origin in Firefox through browser policies (from the browsers' own stores, kept up to date, users cannot remove it). Entries others added are kept.",
+    minutes: 5,
+    script: () => adblockScript(),
+  },
+  adblock_remove: {
+    label: "Remove the adblocker policy",
+    group: "Browsers",
+    help: "Takes out what “Install adblocker” added; the browsers uninstall it at their next start.",
+    minutes: 5,
+    script: () => adblockScript({ remove: true }),
+  },
+  perf_snapshot: {
+    label: "Performance snapshot",
+    group: "Performance",
+    help: "Measures CPU over 30 seconds, memory and commit, process count, the last boot time (Windows' boot diagnostics) and the programs using the most memory. Kept on the PC's page to compare before and after cleaning.",
+    minutes: 5,
+    script: () => perfScript(),
+  },
+  speed_test: {
+    label: "Internet speed test",
+    group: "Performance",
+    help: "Latency, download and upload against Cloudflare's speed test (about 10 s each way, up to 25 MB down and 10 MB up). Kept on the PC's page. Run them on one office at a time: tests on the same line slow each other down.",
+    minutes: 5,
+    script: () => speedScript(),
   },
   sfc: {
     label: "Check system files (sfc /scannow)",
@@ -240,7 +328,31 @@ export function taskScript(id, options = {}) {
   };
 }
 
+/** A task's options from a request: only known keys, of the right type. */
+export function cleanOptions(id, raw = {}) {
+  const t = TASKS[id];
+  const out = {};
+  if (!t?.options || !raw || typeof raw !== "object") return out;
+  if ("delay_min" in t.options && raw.delay_min !== undefined) out.delay_min = Number(raw.delay_min);
+  if ("message" in t.options && typeof raw.message === "string") out.message = raw.message;
+  if ("asr" in t.options && raw.asr !== undefined) {
+    if (!ASR_MODES[raw.asr]) throw new Error("attack surface reduction: choose off, audit, standard or block");
+    out.asr = raw.asr;
+  }
+  if ("controlled_folders" in t.options && raw.controlled_folders !== undefined) out.controlled_folders = !!raw.controlled_folders;
+  return out;
+}
+
 /** Task list for the UI (no scripts). */
 export function taskCatalog() {
-  return Object.entries(TASKS).map(([id, t]) => ({ id, label: t.label, group: t.group, help: t.help, minutes: t.minutes, options: t.options ?? null, fail_meaning: t.failMeaning ?? null }));
+  return Object.entries(TASKS).map(([id, t]) => ({
+    id,
+    label: t.label,
+    group: t.group,
+    help: t.help,
+    minutes: t.minutes,
+    options: t.options ?? null,
+    choices: t.options && "asr" in t.options ? { asr: ASR_MODES } : null,
+    fail_meaning: t.failMeaning ?? null,
+  }));
 }

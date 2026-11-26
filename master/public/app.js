@@ -347,7 +347,7 @@ function renderTabs() {
   const running = [...S.jobs.values()].filter((j) => ["queued", "preparing", "sending", "installing", "running"].some((s) => j.counts[s])).length;
   const tab = (id, label, count) =>
     h("button", { class: `tab${S.view === id ? " active" : ""}`, onclick: () => go(id) }, label, count ? h("span", { class: "count" }, count) : null);
-  put(nav, tab("computers", "Computers"), tab("scripts", "Scripts"), tab("startup", "Startup"), tab("vault", "Passwords"), tab("activity", "Activity", running), tab("settings", "Settings"));
+  put(nav, tab("computers", "Computers"), tab("apply", "Apply"), tab("scripts", "Scripts"), tab("startup", "Startup"), tab("vault", "Passwords"), tab("activity", "Activity", running), tab("settings", "Settings"));
 }
 
 function go(view) {
@@ -364,6 +364,7 @@ function renderMain(full = false) {
   if (S.view === "settings") return renderSettings(main, full);
   if (S.view === "scripts") return renderScripts(main, full);
   if (S.view === "startup") return renderStartupView(main, full);
+  if (S.view === "apply") return renderApply(main, full);
   if (S.view === "vault" && full) return renderVaultView(main);
 }
 
@@ -388,6 +389,7 @@ function filteredAgents() {
       if (S.filter === "online" && !a.online) return false;
       if (S.filter === "offline" && a.online) return false;
       if (S.filter === "outdated" && !a.outdated) return false;
+      if (S.filter === "dirty" && a.cleaned) return false;
       if (!q) return true;
       return [a.hostname, a.user, a.ip, a.os, ...(a.tags ?? [])].some((x) => String(x ?? "").toLowerCase().includes(q));
     })
@@ -427,7 +429,7 @@ function renderComputers(main, full) {
       h(
         "div",
         { class: "card" },
-        h("div", { class: "toolbar" }, search, h("div", { class: "chips" }, chip("all", "All"), chip("online", "Online"), chip("offline", "Offline"), chip("outdated", "Agent outdated"))),
+        h("div", { class: "toolbar" }, search, h("div", { class: "chips" }, chip("all", "All"), chip("online", "Online"), chip("offline", "Offline"), chip("outdated", "Agent outdated"), chip("dirty", "Not cleaned"))),
         h(
           "table",
           { id: "devtable" },
@@ -448,6 +450,7 @@ function renderComputers(main, full) {
               h("th", { class: "hide-sm" }, "CPU"),
               h("th", { class: "hide-sm" }, "Memory"),
               h("th", { class: "hide-sm" }, "Disk"),
+              h("th", { class: "hide-sm" }, "Internet"),
               h("th", { class: "hide-sm" }, "Agent"),
             ),
           ),
@@ -480,7 +483,7 @@ function renderRows() {
         {},
         h(
           "td",
-          { colspan: 7 },
+          { colspan: 8 },
           h(
             "div",
             { class: "empty" },
@@ -506,13 +509,15 @@ function renderRows() {
             "td",
             {},
             h("div", { class: "host" }, h("span", { class: `dot${a.online ? " on" : ""}` }), a.hostname,
-              a.pending_name ? h("span", { class: "pill warn", style: { marginLeft: "6px" }, title: "The new name takes effect when the PC restarts" }, `→ ${a.pending_name} · restart pending`) : null),
+              a.pending_name ? h("span", { class: "pill warn", style: { marginLeft: "6px" }, title: "The new name takes effect when the PC restarts" }, `→ ${a.pending_name} · restart pending`) : null,
+              a.cleaned ? h("span", { class: "pill ok", style: { marginLeft: "6px" }, title: `Cleaned ${new Date(a.cleaned.at).toLocaleString()} by ${a.cleaned.by || "—"}${a.cleaned.note ? ` — ${a.cleaned.note}` : ""}` }, "✓ cleaned") : null),
             h("div", { class: "sub" }, a.online ? [a.ip, a.os].filter(Boolean).join(" · ") : `offline · seen ${ago(a.last_seen)}`),
           ),
           h("td", { class: "hide-sm" }, a.user ? a.user.split("\\").pop() : h("span", { class: "sub" }, "—")),
           h("td", { class: "hide-sm" }, a.online ? meter(a.cpu) : h("span", { class: "sub" }, "—")),
           h("td", { class: "hide-sm" }, meter(a.mem)),
           h("td", { class: "hide-sm" }, meter(a.disk)),
+          h("td", { class: "hide-sm" }, a.speed?.down != null ? h("span", { title: `${ago(a.speed.at)}${a.speed.ping != null ? ` · ${r1(a.speed.ping)} ms` : ""}` }, `↓${Math.round(a.speed.down)} ↑${Math.round(a.speed.up ?? 0)}`, h("span", { class: "sub" }, " Mbps")) : h("span", { class: "sub" }, "—")),
           h("td", { class: "hide-sm" }, a.agent_version || "—", a.outdated ? h("span", { class: "pill warn", style: { marginLeft: "6px" } }, "update") : null,
             a.emanagement && ["error", "unsupported"].includes(a.emanagement.state) ? h("span", { class: "pill bad", style: { marginLeft: "6px" }, title: a.emanagement.detail ?? "" }, "MoldSign ✗") : null),
         ),
@@ -535,8 +540,10 @@ function renderSelbar() {
       "div",
       { class: "selbar" },
       h("b", {}, plural(n, "computer"), " selected"),
-      h("button", { class: "btn primary", onclick: () => openInstall({ mode: "selected" }) }, "Install software"),
+      h("button", { class: "btn primary", onclick: () => openApply(ids) }, "Apply changes"),
+      h("button", { class: "btn", onclick: () => openInstall({ mode: "selected" }) }, "Install software"),
       h("button", { class: "btn", onclick: () => openTasks({ ids }) }, "Maintenance"),
+      h("button", { class: "btn", onclick: () => setCleaned(ids, true) }, "Mark cleaned"),
       h("button", { class: "btn", onclick: () => openAccountsBulk(ids) }, "Accounts"),
       h("button", { class: "btn", onclick: () => openRunScript({ ids }) }, "Run script"),
       h("button", { class: "btn", onclick: () => openScript(ids) }, "PowerShell"),
@@ -553,10 +560,10 @@ function openDrawer(d) {
   S.drawer = d;
   const root = $("#drawer-root");
   const close = () => closeDrawer();
-  const header = h("header", {}, h("h2", { class: "grow" }, d.title), h("div", { class: "spacer" }), h("button", { class: "btn ghost", onclick: close, title: "Close (Esc)" }, "✕"));
+  const header = h("header", {}, h("h2", { class: "grow" }, d.title), h("div", { class: "spacer" }), d.headTools?.(), h("button", { class: "btn ghost", onclick: close, title: "Close (Esc)" }, "✕"));
   d.body = h("div", { class: "body" });
   d.footer = h("footer", {});
-  put(root, h("div", { class: "scrim", onclick: close }), h("aside", { class: "drawer" }, header, d.body, d.footer));
+  put(root, h("div", { class: "scrim", onclick: close }), h("aside", { class: `drawer${d.wide ? " wide" : ""}` }, header, d.body, d.footer));
   d.render();
 }
 function closeDrawer() {
@@ -567,7 +574,10 @@ function refreshDrawer() {
   S.drawer?.live?.();
 }
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && S.drawer) closeDrawer();
+  if (e.key === "Escape" && S.drawer) return closeDrawer();
+  // Drawer shortcuts (moving between PCs), never while typing.
+  const typing = e.target.closest?.("input, textarea, select, [contenteditable]");
+  if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey && S.drawer?.onKey?.(e)) e.preventDefault();
 });
 
 // ---- shared: which computers an action goes to ----
@@ -892,6 +902,7 @@ function openJob(id) {
                 statePill(t.state),
               ),
               t.message ? h("div", { class: "msg" }, t.message) : null,
+              t.steps ? h("ol", { class: "job-steps" }, t.steps.map((st) => h("li", { class: `st-${st.state}` }, h("span", { class: "grow" }, h("b", {}, st.label), st.message ? h("span", { class: "sub" }, ` — ${st.message}`) : null), statePill(st.state)))) : null,
               t.state === "sending" ? pr : null,
               out
                 ? h("div", {},
@@ -943,11 +954,127 @@ function summaryBar(j, withText) {
 }
 
 // ---- device ----
+// The PC page: a wide panel with the computer list on the left (click, ↑/↓ or
+// J/K, or ◀ ▶ in the header to move between PCs) and the PC on the right.
+const NAV = { query: "" };
+function navList() {
+  const q = NAV.query.trim().toLowerCase();
+  return filteredAgents().filter((a) => !q || [a.hostname, a.user, a.ip, ...(a.tags ?? [])].some((x) => String(x ?? "").toLowerCase().includes(q)));
+}
+function pcNav(currentId, onPick) {
+  const list = navList();
+  const search = h("input", {
+    type: "search",
+    class: "nav-search",
+    placeholder: `Find a PC (${list.length})`,
+    value: NAV.query,
+    oninput: (e) => {
+      NAV.query = e.target.value;
+      const items = $(".pcnav-list");
+      if (items) put(items, ...navItems(navList(), currentId, onPick));
+    },
+  });
+  return h("nav", { class: "pcnav" }, search, h("div", { class: "pcnav-list" }, navItems(list, currentId, onPick)));
+}
+function navItems(list, currentId, onPick) {
+  if (!list.length) return [h("div", { class: "sub", style: { padding: "10px" } }, "No computers match")];
+  return list.map((a) =>
+    h(
+      "button",
+      { class: `pcnav-item${a.id === currentId ? " active" : ""}`, onclick: () => onPick(a.id), title: [a.user, a.ip].filter(Boolean).join(" · ") },
+      h("span", { class: `dot${a.online ? " on" : ""}` }),
+      h("span", { class: "gname" }, a.hostname),
+      a.cleaned ? h("span", { class: "cleaned-tick", title: `Cleaned ${ago(a.cleaned.at)}` }, "✓") : null,
+    ),
+  );
+}
+
+/** Start a task on PCs without leaving the page. */
+async function quickTask(ids, task, options = {}) {
+  try {
+    const { job } = await api("POST", "/api/jobs", { kind: "task", targets: ids, wait_offline: false, payload: { task, options } });
+    S.jobs.set(job.id, job);
+    toast(`${job.title}: started`);
+    schedule();
+    return job;
+  } catch (e) {
+    fail(e);
+  }
+}
+async function setCleaned(ids, cleaned, note = "") {
+  try {
+    await api("POST", "/api/cleaned", { targets: ids, cleaned, note });
+    toast(cleaned ? `Marked ${ids.length === 1 ? S.agents.get(ids[0])?.hostname : plural(ids.length, "computer")} as cleaned` : "Cleaned mark removed");
+  } catch (e) {
+    fail(e);
+  }
+}
+/** The newest job on a PC whose title (or a batch step) is `label`. */
+function lastRun(id, label) {
+  for (const j of S.jobs.values()) {
+    const t = j.targets[id];
+    if (!t) continue;
+    if (j.title === label) return { job: j, state: t.state, message: t.message, at: t.finished_at ?? j.created_at };
+    const st = t.steps?.find((s) => s.label === label && s.state !== "queued");
+    if (st) return { job: j, state: st.state, message: st.message, at: t.finished_at ?? j.created_at };
+  }
+  return null;
+}
+const RUNNING = new Set(["queued", "waiting", "preparing", "sending", "installing", "running"]);
+const r1 = (x) => (x == null ? "—" : String(Math.round(Number(x) * 10) / 10));
+function fmtPct(x) {
+  return x == null ? "—" : `${Math.round(x)}%`;
+}
+function delta(before, after, unit = "%", lowerIsBetter = true) {
+  if (before == null || after == null) return null;
+  const d = Math.round((after - before) * 10) / 10;
+  if (Math.abs(d) < 0.5) return h("span", { class: "delta" }, "no change");
+  const good = lowerIsBetter ? d < 0 : d > 0;
+  return h("span", { class: `delta ${good ? "good" : "worse"}` }, `${d > 0 ? "+" : ""}${d}${unit}`);
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+function svg(tag, attrs, ...kids) {
+  const el = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs ?? {})) el.setAttribute(k, String(v));
+  for (const k of kids) if (k) el.append(k);
+  return el;
+}
+/** CPU (blue) and memory (amber) per hour over the last days, 0–100 %. */
+function sparkChart(hours, days = 7) {
+  const W = 600, H = 110, now = Date.now(), from = now - days * 86400_000;
+  const pts = hours.filter((p) => Date.parse(p.t) >= from);
+  if (pts.length < 2) return h("div", { class: "sub spark-empty" }, "Not enough history yet — it builds up while the PC is on.");
+  const x = (t) => ((Date.parse(t) - from) / (now - from)) * W;
+  const y = (v) => H - 4 - (Math.max(0, Math.min(100, v)) / 100) * (H - 8);
+  // Break the line where the PC was off (gap of more than 2 hours).
+  const path = (key) => {
+    let d = "", prev = 0;
+    for (const p of pts) {
+      const t = Date.parse(p.t);
+      d += `${!d || t - prev > 2 * 3600_000 ? "M" : "L"}${x(p.t).toFixed(1)},${y(p[key]).toFixed(1)}`;
+      prev = t;
+    }
+    return d;
+  };
+  const grid = [25, 50, 75].map((v) => svg("line", { x1: 0, x2: W, y1: y(v), y2: y(v), class: "spark-grid" }));
+  const dayLines = [];
+  for (let i = 1; i < days; i++) dayLines.push(svg("line", { x1: (i / days) * W, x2: (i / days) * W, y1: 0, y2: H, class: "spark-grid" }));
+  return h(
+    "div",
+    { class: "spark-wrap" },
+    svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", class: "spark", role: "img", "aria-label": "CPU and memory, last 7 days" }, ...grid, ...dayLines, svg("path", { d: path("mem"), class: "spark-mem" }), svg("path", { d: path("cpu"), class: "spark-cpu" })),
+    h("div", { class: "spark-legend sub" }, h("span", { class: "key cpu" }), "CPU", h("span", { class: "key mem" }), "Memory", h("span", { class: "grow" }), `last ${days} days · hourly averages`),
+  );
+}
+
 function openDevice(id, startTab = "overview") {
   let tab = startTab;
   let detail = null;
   let shot = null;
   let swQuery = "";
+  let met = null; // /api/agents/:id/metrics
+  let metKey = "";
   // Accounts tab: { list, at, loading, error, form }
   const acc = { list: null, at: null, loading: false, error: "", form: null };
   // Startup tab. pending: job id → { key, sid, enable } while a toggle runs.
@@ -1006,6 +1133,19 @@ function openDevice(id, startTab = "overview") {
     acc.loading = false;
     d.paint();
   }
+  async function loadMetrics() {
+    try {
+      met = await api("GET", `/api/agents/${id}/metrics`);
+    } catch {
+      met = null;
+    }
+    if (tab === "overview") d.paint();
+  }
+  /** Refetch the history when something that feeds it changed. */
+  function metricsKey(a) {
+    const finished = [...S.jobs.values()].filter((j) => j.targets[id]?.finished_at).length;
+    return [a.speed?.at, a.cleaned?.at, finished].join("|");
+  }
   function accountsTab(a) {
     if (acc.form) {
       const st = acc.form;
@@ -1030,38 +1170,219 @@ function openDevice(id, startTab = "overview") {
     if (acc.error) return [head, h("div", { class: "note" }, acc.error)];
     if (!acc.list) return [head];
     const act = (u, action) => () => { acc.form = newAccountState(action, u.name); d.paint(); };
-    return [
-      head,
-      acc.list.map((u) =>
+    // People's accounts first, then what Windows creates by itself.
+    const isDefault = (u) => !!(u.default_kind ?? (u.builtin ? "builtin" : null));
+    const people = acc.list.filter((u) => !isDefault(u));
+    const defaults = acc.list.filter(isDefault);
+    const row = (u) => {
+      const kind = u.default_kind ?? (u.builtin ? "builtin" : null);
+      return h(
+        "div",
+        { class: `sw${kind ? " is-default" : ""}` },
         h(
           "div",
-          { class: "sw" },
-          h(
-            "div",
-            { class: "grow" },
-            h("b", {}, u.name),
-            " ",
-            u.admin ? h("span", { class: "pill blue" }, "Administrator") : null,
-            " ",
-            !u.enabled ? h("span", { class: "pill" }, "Disabled") : null,
-            " ",
-            u.builtin ? h("span", { class: "pill" }, "Built-in") : null,
-            h("div", { class: "sub" }, [u.full_name, u.last_logon ? `last sign-in ${ago(u.last_logon)}` : "never signed in", u.password_last_set ? `password set ${ago(u.password_last_set)}` : null].filter(Boolean).join(" · ")),
-          ),
-          h("button", { class: "btn small", onclick: act(u, "set_password") }, "Password"),
-          h("button", { class: "btn small", onclick: act(u, "rename") }, "Rename"),
-          h("button", { class: "btn small", onclick: act(u, u.enabled ? "disable" : "enable") }, u.enabled ? "Disable" : "Enable"),
-          h("button", { class: "btn small", onclick: act(u, u.admin ? "remove_admin" : "add_admin") }, u.admin ? "Not admin" : "Make admin"),
-          u.builtin ? null : h("button", { class: "btn small ghost danger", onclick: act(u, "delete") }, "Delete"),
+          { class: "grow" },
+          h("b", {}, u.name),
+          " ",
+          kind === "builtin"
+            ? h("span", { class: "pill", title: "Created by Windows itself (well-known account)" }, "Windows default")
+            : kind === "setup"
+              ? h("span", { class: "pill warn", title: "Left over from Windows setup; usually safe to delete" }, "Setup leftover")
+              : h("span", { class: "pill blue", title: "Created by a person or a program after Windows was installed" }, "Added"),
+          " ",
+          u.admin ? h("span", { class: "pill blue" }, "Administrator") : null,
+          " ",
+          !u.enabled ? h("span", { class: "pill" }, "Disabled") : null,
+          h("div", { class: "sub" }, [u.full_name || u.description, u.last_logon ? `last sign-in ${ago(u.last_logon)}` : "never signed in", u.password_last_set ? `password set ${ago(u.password_last_set)}` : null].filter(Boolean).join(" · ")),
         ),
-      ),
+        h("button", { class: "btn small", onclick: act(u, "set_password") }, "Password"),
+        h("button", { class: "btn small", onclick: act(u, "rename") }, "Rename"),
+        h("button", { class: "btn small", onclick: act(u, u.enabled ? "disable" : "enable") }, u.enabled ? "Disable" : "Enable"),
+        h("button", { class: "btn small", onclick: act(u, u.admin ? "remove_admin" : "add_admin") }, u.admin ? "Not admin" : "Make admin"),
+        kind === "builtin" ? null : h("button", { class: "btn small ghost danger", onclick: act(u, "delete") }, "Delete"),
+      );
+    };
+    return [
+      head,
+      h("div", { class: "acc-head" }, `People and programs (${people.length})`),
+      people.length ? people.map(row) : h("div", { class: "sub" }, "Only Windows' own accounts on this PC."),
+      h("div", { class: "acc-head" }, `Windows defaults (${defaults.length})`),
+      defaults.map(row),
     ];
   }
+
+  function overview(a) {
+    const t = detail?.telemetry;
+    const disks = t?.disks?.map((x) => `${x.mount} ${Math.round(x.total_gb - x.available_gb)}/${Math.round(x.total_gb)} GB`).join(", ");
+    const kv = (k, v) => [h("span", {}, k), h("b", {}, v ?? "—")];
+    const card = (title, tools, ...body) => h("section", { class: "card pc-card" }, h("div", { class: "pc-card-head" }, h("h3", {}, title), h("span", { class: "spacer" }), ...[tools].flat()), ...body);
+
+    const status = card(
+      "This PC",
+      null,
+      h(
+        "div",
+        { class: "kv" },
+        kv("Status", a.online ? "Online" : `Offline — seen ${ago(a.last_seen)}`),
+        a.pending_name ? kv("Rename", `to ${a.pending_name} — pending restart`) : null,
+        kv("User", a.user),
+        kv("Windows", a.os),
+        kv("IP address", a.ip),
+        kv("CPU", t ? `${t.cpu_name} · ${t.cpu_cores} cores` : null),
+        kv("Memory", t ? `${Math.round(t.mem_total_mb / 1024)} GB` : null),
+        kv("Disks", disks),
+        kv("Uptime", uptime(a.uptime_secs)),
+        kv("Agent", a.agent_version + (a.outdated ? " (update available)" : "")),
+        kv("MoldSign bridge", emgText(a.emanagement)),
+        kv("MAC", detail?.macs?.join(", ")),
+      ),
+      a.tags?.length ? h("div", { class: "pcs-chips", style: { marginTop: "10px" } }, a.tags.map((x) => h("span", { class: "pill" }, x))) : null,
+    );
+
+    // ---- performance ----
+    const snap = met?.snaps?.at(-1);
+    const snapRun = lastRun(id, "Performance snapshot");
+    const perf = card(
+      "Performance",
+      h("button", { class: "btn small", disabled: !a.online || (snapRun && RUNNING.has(snapRun.state)), onclick: () => quickTask([id], "perf_snapshot") }, snapRun && RUNNING.has(snapRun.state) ? "Measuring… (30 s)" : "Take snapshot"),
+      h(
+        "div",
+        { class: "big-stats" },
+        h("div", {}, h("span", {}, "CPU now"), h("b", {}, a.online ? fmtPct(a.cpu) : "—"), meter(a.online ? a.cpu : null)),
+        h("div", {}, h("span", {}, "Memory now"), h("b", {}, fmtPct(a.mem)), meter(a.mem)),
+        h("div", {}, h("span", {}, "CPU · 7-day avg"), h("b", {}, fmtPct(met?.week?.cpu))),
+        h("div", {}, h("span", {}, "Memory · 7-day avg"), h("b", {}, fmtPct(met?.week?.mem))),
+      ),
+      met ? sparkChart(met.hours ?? []) : h("div", { class: "sub" }, "Loading history…"),
+      snap
+        ? h(
+            "div",
+            { class: "snap" },
+            h("div", { class: "sub" }, `Snapshot ${ago(snap.at)}: CPU ${fmtPct(snap.cpu_avg)} over 30 s · ${snap.processes ?? "?"} processes · commit ${snap.commit_mb ? `${(snap.commit_mb / 1024).toFixed(1)} GB` : "?"}${snap.boot_ms ? ` · boot ${Math.round(snap.boot_ms / 1000)} s` : ""}`),
+            snap.top?.length ? h("div", { class: "sub" }, "Most memory: ", snap.top.map((p) => `${p.name} ${p.mb} MB`).join(", ")) : null,
+          )
+        : null,
+    );
+
+    // ---- cleaning ----
+    const c = met?.compare;
+    const cmpRow = (label, b, aft, unit, fmt = (x) => `${x}${unit}`) =>
+      h("tr", {}, h("td", {}, label), h("td", {}, b == null ? "—" : fmt(b)), h("td", {}, aft == null ? "—" : fmt(aft)), h("td", {}, delta(b, aft, unit) ?? ""));
+    const cleaning = card(
+      "Cleaning",
+      a.cleaned
+        ? [h("button", { class: "btn small", onclick: () => setCleaned([id], true) }, "Cleaned again today"), h("button", { class: "btn small ghost", onclick: () => confirm(`Remove the cleaned mark from ${a.hostname}?`) && setCleaned([id], false) }, "Clear mark")]
+        : h("button", { class: "btn small primary", onclick: () => setCleaned([id], true) }, "Mark as cleaned"),
+      a.cleaned
+        ? h("div", {}, h("span", { class: "pill ok" }, "✓ Cleaned"), " ", h("span", { class: "sub" }, `${new Date(a.cleaned.at).toLocaleDateString()} (${ago(a.cleaned.at)}) by ${a.cleaned.by || "—"}${a.cleaned.note ? ` — ${a.cleaned.note}` : ""}`))
+        : h("div", {}, h("span", { class: "pill warn" }, "Not cleaned yet"), " ", h("span", { class: "sub" }, "Take a snapshot first, clean, then mark it: the averages before and after show whether it helped.")),
+      c
+        ? h(
+            "table",
+            { class: "cmp" },
+            h("thead", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "7 days before"), h("th", {}, "since"), h("th", {}, ""))),
+            h(
+              "tbody",
+              {},
+              cmpRow("CPU (avg)", c.before?.cpu, c.after?.cpu, "%"),
+              cmpRow("Memory (avg)", c.before?.mem, c.after?.mem, "%"),
+              c.snap_before || c.snap_after ? cmpRow("Boot time", c.snap_before?.boot_ms != null ? Math.round(c.snap_before.boot_ms / 1000) : null, c.snap_after?.boot_ms != null ? Math.round(c.snap_after.boot_ms / 1000) : null, " s") : null,
+              c.snap_before || c.snap_after ? cmpRow("Processes", c.snap_before?.processes, c.snap_after?.processes, "") : null,
+            ),
+          )
+        : null,
+      c && !c.after ? h("div", { class: "sub" }, "The “since” column fills in as the PC runs after the mark.") : null,
+      c && c.after && !c.snap_after ? h("div", { class: "sub" }, "Take a snapshot after a restart for the boot time and process count.") : null,
+    );
+
+    // ---- internet ----
+    const speeds = (met?.speed ?? []).filter((s) => s.down != null);
+    const sp = a.speed?.down != null ? a.speed : speeds.at(-1);
+    const spRun = lastRun(id, "Internet speed test");
+    const maxDown = Math.max(1, ...speeds.map((s) => s.down));
+    const internet = card(
+      "Internet",
+      h("button", { class: "btn small", disabled: !a.online || (spRun && RUNNING.has(spRun.state)), onclick: () => quickTask([id], "speed_test") }, spRun && RUNNING.has(spRun.state) ? "Testing… (~30 s)" : "Test now"),
+      sp
+        ? h(
+            "div",
+            { class: "big-stats" },
+            h("div", {}, h("span", {}, "Download"), h("b", {}, `${r1(sp.down)} Mbps`)),
+            h("div", {}, h("span", {}, "Upload"), h("b", {}, `${r1(sp.up)} Mbps`)),
+            h("div", {}, h("span", {}, "Latency"), h("b", {}, `${r1(sp.ping)} ms`)),
+          )
+        : h("div", { class: "sub" }, a.speed?.error ? `Last test failed: ${a.speed.error}` : "No speed test yet."),
+      sp ? h("div", { class: "sub" }, `${ago(sp.at)}${sp.isp ? ` · ${sp.isp}` : ""}${sp.colo ? ` · via ${sp.colo}` : ""}${sp.scheduled ? " · scheduled" : ""}`) : null,
+      speeds.length > 1
+        ? h("div", { class: "speed-bars", title: "Download speed, oldest to newest" }, speeds.slice(-30).map((s) => h("i", { title: `${new Date(s.at).toLocaleString()}: ↓ ${r1(s.down)} ↑ ${r1(s.up)} Mbps, ${r1(s.ping)} ms`, style: { height: `${Math.max(4, (s.down / maxDown) * 100)}%` } })))
+        : null,
+    );
+
+    // ---- security ----
+    const sec = lastRun(id, "Security check");
+    const base = lastRun(id, "Security baseline (turn on all protection)");
+    const adb = lastRun(id, "Install adblocker in all browsers");
+    const line = (label, r) =>
+      h("div", { class: "sec-line" }, h("span", { class: "grow" }, label), r ? [statePill(r.state), h("span", { class: "sub" }, ` ${ago(r.at)}`)] : h("span", { class: "sub" }, "never run"));
+    const security = card(
+      "Security",
+      [
+        h("button", { class: "btn small", disabled: !a.online, onclick: () => quickTask([id], "security_status") }, "Check"),
+        h("button", { class: "btn small", onclick: () => openTasks({ ids: [id], task: "security_baseline" }) }, "Apply baseline…"),
+      ],
+      line("Security check", sec),
+      sec?.message ? h("div", { class: `sub sec-msg${sec.state === "failed" ? " bad" : ""}` }, sec.message) : null,
+      line("Baseline applied", base),
+      line("Adblocker", adb),
+      sec ? h("button", { class: "btn ghost small", onclick: () => openJob(sec.job.id) }, "Details") : null,
+    );
+
+    // ---- recent ----
+    const js = [...S.jobs.values()].filter((j) => j.targets[id]).slice(0, 6);
+    const recent = card(
+      "Recent actions",
+      h("button", { class: "btn small ghost", onclick: () => { tab = "history"; d.paint(); } }, "All"),
+      js.length
+        ? js.map((j) => h("div", { class: "mini-job", onclick: () => openJob(j.id) }, h("div", { class: "grow" }, h("div", { class: "title" }, j.title), h("div", { class: "sub" }, `${ago(j.created_at)} · ${j.targets[id].message || ""}`)), statePill(j.targets[id].state)))
+        : h("div", { class: "sub" }, "Nothing done on this computer yet."),
+    );
+
+    return [
+      h("div", { class: "pc-grid" }, status, perf, cleaning, internet, security, recent),
+      shot ? h("img", { class: "shot", src: shot, alt: "screenshot" }) : null,
+      !a.online ? h("div", { style: { marginTop: "16px" } }, h("button", { class: "btn danger", onclick: () => confirm(`Remove ${a.hostname} from the list? It reappears if its agent connects again.`) && api("DELETE", `/api/agents/${id}`).then(closeDrawer).catch(fail) }, "Remove from list")) : null,
+    ];
+  }
+
+  const go2 = (nid) => {
+    if (nid && nid !== id) openDevice(nid, tab === "accounts" || tab === "startup" ? "overview" : tab);
+  };
+  const step = (dir) => {
+    const list = navList();
+    const i = list.findIndex((x) => x.id === id);
+    const n = list[(i < 0 ? 0 : i + dir + list.length) % list.length];
+    if (n) go2(n.id);
+  };
   const d = {
     title: S.agents.get(id)?.hostname ?? "Computer",
+    wide: true,
+    headTools: () => [
+      h("button", { class: "btn ghost small", title: "Previous computer (↑ or K)", onclick: () => step(-1) }, "◀"),
+      h("button", { class: "btn ghost small", title: "Next computer (↓ or J)", onclick: () => step(1) }, "▶"),
+    ],
+    onKey(e) {
+      if (e.key === "ArrowDown" || e.key === "j") step(1);
+      else if (e.key === "ArrowUp" || e.key === "k") step(-1);
+      else return false;
+      return true;
+    },
     async render() {
       d.paint();
+      $(".pcnav-item.active")?.scrollIntoView({ block: "nearest" });
       if (tab === "startup" && !su.list && !su.loading) su.load();
+      if (tab === "accounts" && !acc.list && !acc.loading) loadAccounts();
+      metKey = metricsKey(S.agents.get(id) ?? {});
+      loadMetrics();
       try {
         detail = await api("GET", `/api/agents/${id}`);
       } catch (e) {
@@ -1072,12 +1393,13 @@ function openDevice(id, startTab = "overview") {
     paint() {
       const a = S.agents.get(id);
       if (!a) return closeDrawer();
-      const t = detail?.telemetry;
-      const sub = h("div", { class: "subtabs" }, ["overview", "software", "startup", "accounts", "history"].map((k) => h("button", { class: tab === k ? "active" : "", onclick: () => { tab = k; if (k === "accounts" && !acc.list && !acc.loading) loadAccounts(); if (k === "startup" && !su.list && !su.loading) su.load(); d.paint(); } }, { overview: "Overview", software: `Programs (${detail?.software?.length ?? a.software_count})`, startup: "Startup", accounts: "Accounts", history: "History" }[k])));
+      const titles = { overview: "Overview", software: `Programs (${detail?.software?.length ?? a.software_count})`, startup: "Startup", accounts: "Accounts", history: "History" };
+      const sub = h("div", { class: "subtabs" }, Object.keys(titles).map((k) => h("button", { class: tab === k ? "active" : "", onclick: () => { tab = k; if (k === "accounts" && !acc.list && !acc.loading) loadAccounts(); if (k === "startup" && !su.list && !su.loading) su.load(); d.paint(); } }, titles[k])));
       const actions = h(
         "div",
         { class: "actions" },
-        h("button", { class: "btn primary", onclick: () => openInstall({ ids: [id] }) }, "Install software"),
+        h("button", { class: "btn primary", onclick: () => openApply([id]) }, "Apply changes…"),
+        h("button", { class: "btn", onclick: () => openInstall({ ids: [id] }) }, "Install software"),
         h("button", { class: "btn", onclick: () => openTasks({ ids: [id] }) }, "Maintenance"),
         h("button", { class: "btn", onclick: () => openRunScript({ ids: [id] }) }, "Run script"),
         h("button", { class: "btn", onclick: () => openScript([id]) }, "PowerShell"),
@@ -1089,28 +1411,7 @@ function openDevice(id, startTab = "overview") {
       );
       let content;
       if (tab === "overview") {
-        const disks = t?.disks?.map((x) => `${x.mount} ${Math.round(x.total_gb - x.available_gb)}/${Math.round(x.total_gb)} GB`).join(", ");
-        const fact = (k, v) => h("div", { class: "fact" }, h("span", {}, k), h("b", {}, v ?? "—"));
-        content = [
-          h(
-            "div",
-            { class: "facts" },
-            fact("Status", a.online ? "Online" : `Offline — seen ${ago(a.last_seen)}`),
-            a.pending_name ? fact("Rename", `to ${a.pending_name} — pending restart`) : null,
-            fact("User", a.user),
-            fact("Windows", a.os),
-            fact("IP address", a.ip),
-            fact("CPU", t ? `${t.cpu_name} · ${t.cpu_cores} cores · ${a.cpu}%` : null),
-            fact("Memory", t ? `${Math.round(t.mem_used_mb / 1024)} / ${Math.round(t.mem_total_mb / 1024)} GB (${a.mem}%)` : null),
-            fact("Disks", disks),
-            fact("Uptime", uptime(a.uptime_secs)),
-            fact("Agent", a.agent_version + (a.outdated ? " (update available)" : "")),
-            fact("MoldSign bridge", emgText(a.emanagement)),
-            fact("MAC", detail?.macs?.join(", ")),
-          ),
-          shot ? h("img", { class: "shot", src: shot, alt: "screenshot" }) : null,
-          !a.online ? h("div", { style: { marginTop: "16px" } }, h("button", { class: "btn danger", onclick: () => confirm(`Remove ${a.hostname} from the list? It reappears if its agent connects again.`) && api("DELETE", `/api/agents/${id}`).then(closeDrawer).catch(fail) }, "Remove from list")) : null,
-        ];
+        content = overview(a);
       } else if (tab === "accounts") {
         content = accountsTab(a);
       } else if (tab === "startup") {
@@ -1118,7 +1419,7 @@ function openDevice(id, startTab = "overview") {
       } else if (tab === "software") {
         const list = (detail?.software ?? []).filter((s) => !swQuery || s.name.toLowerCase().includes(swQuery.toLowerCase())).sort((x, y) => x.name.localeCompare(y.name));
         content = [
-          h("input", { type: "search", placeholder: "Search programs…", value: swQuery, oninput: (e) => { swQuery = e.target.value; const pos = e.target.selectionStart; d.paint(); const i = $(".drawer input[type=search]"); i?.focus(); i?.setSelectionRange(pos, pos); } }),
+          h("input", { type: "search", class: "sw-search", placeholder: "Search programs…", value: swQuery, oninput: (e) => { swQuery = e.target.value; const pos = e.target.selectionStart; d.paint(); const i = $(".drawer .sw-search"); i?.focus(); i?.setSelectionRange(pos, pos); } }),
           detail?.software_at ? h("div", { class: "sub", style: { margin: "6px 0" } }, `List from ${ago(detail.software_at)}`) : null,
           list.map((s) =>
             h(
@@ -1137,12 +1438,32 @@ function openDevice(id, startTab = "overview") {
           ? h("div", { class: "card" }, js.map((j) => h("div", { class: "job", onclick: () => openJob(j.id) }, h("div", { class: "grow" }, h("div", { class: "title" }, j.title), h("div", { class: "sub" }, `${ago(j.created_at)} · ${j.targets[id].message || ""}`)), statePill(j.targets[id].state))))
           : h("div", { class: "empty" }, "Nothing done on this computer yet.");
       }
-      put(d.body, actions, sub, ...[content].flat());
-      put(d.footer, h("span", { class: "sub" }, `${a.hostname} · id ${id}`));
+      const scroll = $(".pc-main")?.scrollTop ?? 0;
+      const navScroll = $(".pcnav-list")?.scrollTop ?? null;
+      const navFocus = document.activeElement?.classList.contains("nav-search");
+      const main = h("div", { class: "pc-main" }, actions, sub, ...[content].flat());
+      put(d.body, h("div", { class: "pc-layout" }, pcNav(id, go2), main));
+      main.scrollTop = scroll;
+      if (navScroll !== null) $(".pcnav-list").scrollTop = navScroll;
+      if (navFocus) {
+        const i = $(".nav-search");
+        i?.focus();
+        i?.setSelectionRange(i.value.length, i.value.length);
+      }
+      put(d.footer, h("span", { class: "sub" }, `${a.hostname} · id ${id}`), h("span", { class: "spacer" }), h("span", { class: "sub hide-sm" }, "↑ ↓ to switch computers · Esc to close"));
     },
     live() {
-      // Don't repaint under the user's typing (search box, account form).
-      if (settleToggles() || (tab !== "software" && !(tab === "accounts" && acc.form))) d.paint();
+      const a = S.agents.get(id);
+      if (a) {
+        const k = metricsKey(a);
+        if (k !== metKey) {
+          metKey = k;
+          loadMetrics();
+        }
+      }
+      // Don't repaint under the user's typing (search boxes, account form).
+      const typing = document.activeElement?.matches?.(".drawer input, .drawer textarea");
+      if (settleToggles() || (!typing && tab !== "software" && !(tab === "accounts" && acc.form))) d.paint();
     },
   };
   async function takeShot() {
@@ -1212,7 +1533,16 @@ function openTasks({ ids, task } = {}) {
             ),
           ),
           h("div", { class: "note info" }, t.help),
-          t.options
+          t.choices?.asr
+            ? h(
+                "div",
+                { style: { marginTop: "10px" } },
+                h("label", { class: "field" }, "Attack surface reduction rules"),
+                h("select", { onchange: (e) => (st.asr = e.target.value) }, Object.entries(t.choices.asr).map(([k, v]) => h("option", { value: k, selected: (st.asr ?? t.options.asr) === k }, v))),
+                h("label", { class: "check", style: { marginTop: "8px" } }, h("input", { type: "checkbox", checked: !!st.cfa, onchange: (e) => (st.cfa = e.target.checked) }),
+                  h("span", {}, "Controlled folder access (ransomware protection)", h("small", {}, "Can stop ordinary programs from saving into Documents/Desktop until allowed — try one PC first."))),
+              )
+            : t.options
             ? h(
                 "div",
                 { class: "grid2", style: { marginTop: "10px" } },
@@ -1244,7 +1574,7 @@ function openTasks({ ids, task } = {}) {
             onclick: async (e) => {
               if ((st.task === "restart" || st.task === "shutdown") && !confirm(`${t.label} ${plural(n, "computer")} in ${st.delay} min?`)) return;
               e.target.disabled = true;
-              const options = t.options ? { delay_min: Number(st.delay) || 0, message: st.message } : {};
+              const options = t.choices?.asr ? { asr: st.asr ?? t.options.asr, controlled_folders: !!st.cfa } : t.options ? { delay_min: Number(st.delay) || 0, message: st.message } : {};
               await createJob({ kind: "task", targets: targetParam(tg), wait_offline: st.waitOffline, payload: { task: st.task, options } });
             },
           },
@@ -1525,6 +1855,332 @@ function openRename(ids) {
 }
 
 // ---------------------------------------------------------- saved scripts --
+// ------------------------------------------------------------------ apply --
+// One place to apply many changes to many PCs: pick changes (tasks, saved
+// scripts, "mark as cleaned") into an ordered list, pick computers, run. Each
+// PC runs the list top to bottom as one action with a result per step.
+const AP = { steps: [], ids: new Set(), filter: "all", query: "", waitOffline: true, stopOnFail: false, name: "", fleet: null, fleetLoading: false };
+let apSeq = 0;
+
+function openApply(ids) {
+  if (ids?.length) AP.ids = new Set(ids);
+  else if (S.selected.size) AP.ids = new Set(S.selected);
+  closeDrawer();
+  go("apply");
+}
+
+const APPLY_PRESETS = [
+  { id: "setup", label: "New PC setup", help: "Snapshot, security baseline, adblocker, debloat, Windows updates, mark cleaned", steps: ["task:perf_snapshot", "task:security_baseline", "task:adblock", "script:debloat", "task:install_updates", "mark"] },
+  { id: "clean", label: "Clean-up", help: "Snapshot before, debloat, temp files, startup check, mark cleaned", steps: ["task:perf_snapshot", "script:debloat", "task:cleanup", "task:disk_health", "mark"] },
+  { id: "secure", label: "Secure", help: "Security baseline, adblocker, Defender update + scan, security check", steps: ["task:security_baseline", "task:adblock", "task:defender_scan", "task:security_status"] },
+  { id: "health", label: "Health check (changes nothing)", help: "Security check, updates waiting, disk health, performance, internet speed", steps: ["task:security_status", "task:check_updates", "task:disk_health", "task:perf_snapshot", "task:speed_test"] },
+  { id: "updates", label: "Fix & install updates", help: "Repair Windows Update, then install everything waiting", steps: ["task:repair_updates", "task:install_updates"] },
+];
+
+function apStep(key) {
+  const [type, ref] = key.split(":");
+  if (type === "task") {
+    const t = S.tasks.find((x) => x.id === ref);
+    if (!t) return null;
+    return { key, uid: ++apSeq, type: "task", task: t.id, label: t.label, help: t.help, options: t.options ? { ...t.options } : null, choices: t.choices };
+  }
+  if (type === "script") {
+    const s = ref === "debloat" ? S.scripts.find((x) => /debloat/i.test(x.name)) : S.scripts.find((x) => x.id === ref);
+    if (!s) return null;
+    return { key: `script:${s.id}`, uid: ++apSeq, type: "saved_script", script_id: s.id, label: `Script: ${s.name}`, help: s.description || "" };
+  }
+  if (type === "mark") return { key, uid: ++apSeq, type: "mark_cleaned", label: "Mark as cleaned", help: "Marks each PC as cleaned when every step before it succeeded (the before/after comparison starts here).", note: "" };
+  return null;
+}
+function apAdd(key) {
+  const s = apStep(key);
+  if (!s || AP.steps.some((x) => x.key === s.key)) return;
+  // Power steps and the cleaned mark go last; a restart after the mark.
+  const tailRank = (x) => (x.type === "task" && POWER.has(x.task) ? 2 : x.type === "mark_cleaned" ? 1 : 0);
+  AP.steps.push(s);
+  AP.steps.sort((a, b) => tailRank(a) - tailRank(b));
+}
+
+function apAgents() {
+  const q = AP.query.trim().toLowerCase();
+  return [...S.agents.values()]
+    .filter((a) => {
+      if (AP.filter === "online" && !a.online) return false;
+      if (AP.filter === "offline" && a.online) return false;
+      if (AP.filter === "dirty" && a.cleaned) return false;
+      if (AP.filter === "cleaned" && !a.cleaned) return false;
+      if (AP.filter === "picked" && !AP.ids.has(a.id)) return false;
+      return !q || [a.hostname, a.user, a.ip, a.os, ...(a.tags ?? [])].some((x) => String(x ?? "").toLowerCase().includes(q));
+    })
+    .sort((a, b) => (b.online - a.online) || a.hostname.localeCompare(b.hostname));
+}
+
+function renderApply(main, full) {
+  main.dataset.view = "apply";
+  if (!full && $("#ap-root")) {
+    // Live updates: only what changes on its own.
+    const pcs = $("#ap-pcs");
+    if (pcs && !pcs.contains(document.activeElement)) apPaintPcs();
+    apPaintRun();
+    return;
+  }
+  for (const id of [...AP.ids]) if (!S.agents.has(id)) AP.ids.delete(id);
+  put(
+    main,
+    h("div", { class: "page-head" }, h("h1", {}, "Apply changes"), h("span", { class: "sub" }, "Pick changes and computers; every PC runs the list top to bottom.")),
+    h(
+      "div",
+      { class: "apply", id: "ap-root" },
+      h("section", { class: "card ap-lib" }, h("div", { class: "ap-col-head" }, h("span", { class: "step-num" }, "1"), h("b", {}, "Changes")), h("div", { id: "ap-lib" })),
+      h("section", { class: "card ap-plan" }, h("div", { class: "ap-col-head" }, h("span", { class: "step-num" }, "2"), h("b", {}, "In this order")), h("div", { id: "ap-steps" })),
+      h("section", { class: "card ap-pcs-card" }, h("div", { class: "ap-col-head" }, h("span", { class: "step-num" }, "3"), h("b", {}, "On these computers")), h("div", { id: "ap-pcs" })),
+    ),
+    h("div", { class: "ap-run", id: "ap-run" }),
+    h("div", { class: "grid2", style: { marginTop: "18px" } }, h("section", { class: "card card-pad", id: "ap-fleet" }), h("section", { class: "card card-pad", id: "ap-measure" })),
+  );
+  apPaintLib();
+  apPaintSteps();
+  apPaintPcs();
+  apPaintRun();
+  apPaintMeasure();
+  apLoadFleet();
+}
+
+function apPaintLib() {
+  const root = $("#ap-lib");
+  if (!root) return;
+  const has = (k) => AP.steps.some((x) => x.key === k);
+  const item = (key, label, sub, title) =>
+    h("button", { class: `ap-item${has(key) ? " added" : ""}`, title: title ?? "", onclick: () => { has(key) ? (AP.steps = AP.steps.filter((x) => x.key !== key)) : apAdd(key); apPaintLib(); apPaintSteps(); apPaintRun(); } },
+      h("span", { class: "ap-plus" }, has(key) ? "✓" : "+"), h("span", { class: "grow" }, label, sub ? h("span", { class: "sub" }, ` ${sub}`) : null));
+  const groups = [...new Set(S.tasks.map((t) => t.group))];
+  put(
+    root,
+    h("div", { class: "ap-presets" }, h("div", { class: "sub ap-group" }, "Ready-made"), APPLY_PRESETS.map((p) =>
+      h("button", { class: "chip", title: p.help, onclick: () => { AP.steps = []; p.steps.forEach(apAdd); AP.name = p.label.replace(/ \(.*\)$/, ""); apPaintLib(); apPaintSteps(); apPaintRun(); } }, p.label))),
+    groups.map((g) => [
+      h("div", { class: "sub ap-group" }, g),
+      S.tasks.filter((t) => t.group === g && t.id !== "cancel_power").map((t) => item(`task:${t.id}`, t.label, null, t.help)),
+    ]),
+    h("div", { class: "sub ap-group" }, "Saved scripts"),
+    S.scripts.length ? S.scripts.map((s) => item(`script:${s.id}`, s.name, null, s.description)) : h("div", { class: "sub" }, "None yet — add them on the Scripts page."),
+    h("div", { class: "sub ap-group" }, "Marks"),
+    item("mark", "Mark as cleaned", null, "Sets the PC's cleaned date when the steps before it succeeded"),
+  );
+}
+
+function apPaintSteps() {
+  const root = $("#ap-steps");
+  if (!root) return;
+  if (!AP.steps.length) {
+    return put(root, h("div", { class: "empty ap-empty" }, h("b", {}, "Nothing chosen yet"), "Click changes on the left, or start from a ready-made list."));
+  }
+  const move = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= AP.steps.length) return;
+    [AP.steps[i], AP.steps[j]] = [AP.steps[j], AP.steps[i]];
+    apPaintSteps();
+  };
+  put(
+    root,
+    h("label", { class: "field", style: { marginTop: 0 } }, "Name (shown in Activity, optional)"),
+    h("input", { type: "text", value: AP.name, placeholder: "e.g. New PC setup", oninput: (e) => { AP.name = e.target.value; } }),
+    h("ol", { class: "ap-steps" }, AP.steps.map((s, i) =>
+      h(
+        "li",
+        { class: "ap-step" },
+        h("div", { class: "row" },
+          h("span", { class: "ap-n" }, i + 1),
+          h("b", { class: "grow" }, s.label),
+          h("button", { class: "btn ghost small", title: "Up", disabled: i === 0, onclick: () => move(i, -1) }, "↑"),
+          h("button", { class: "btn ghost small", title: "Down", disabled: i === AP.steps.length - 1, onclick: () => move(i, 1) }, "↓"),
+          h("button", { class: "btn ghost small", title: "Remove", onclick: () => { AP.steps.splice(i, 1); apPaintSteps(); apPaintLib(); apPaintRun(); } }, "✕")),
+        s.help ? h("div", { class: "sub ap-help", title: s.help }, s.help) : null,
+        apStepOptions(s),
+      ),
+    )),
+    POWER_LAST(),
+  );
+}
+function POWER_LAST() {
+  const i = AP.steps.findIndex((s) => s.type === "task" && POWER.has(s.task));
+  return i >= 0 && i !== AP.steps.length - 1 ? h("div", { class: "note" }, "Restart / shut down must be the last step.") : null;
+}
+function apStepOptions(s) {
+  if (s.type === "mark_cleaned") return h("input", { type: "text", class: "ap-opt", placeholder: "Note (optional), e.g. removed bloat, new SSD", value: s.note, oninput: (e) => (s.note = e.target.value) });
+  if (s.type !== "task" || !s.options) return null;
+  if (s.choices?.asr) {
+    return h(
+      "div",
+      { class: "ap-opt" },
+      h("label", { class: "field" }, "Attack surface reduction rules"),
+      h("select", { onchange: (e) => (s.options.asr = e.target.value) }, Object.entries(s.choices.asr).map(([k, v]) => h("option", { value: k, selected: s.options.asr === k }, v))),
+      h("label", { class: "check", style: { marginTop: "8px" } }, h("input", { type: "checkbox", checked: !!s.options.controlled_folders, onchange: (e) => (s.options.controlled_folders = e.target.checked) }),
+        h("span", {}, "Controlled folder access (ransomware protection)", h("small", {}, "Can stop ordinary programs from saving into Documents/Desktop until they are allowed — test on one PC first."))),
+    );
+  }
+  if ("delay_min" in s.options) {
+    return h(
+      "div",
+      { class: "grid2 ap-opt" },
+      h("div", {}, h("label", { class: "field" }, "Warning time (minutes)"), h("input", { type: "text", value: String(s.options.delay_min), oninput: (e) => (s.options.delay_min = Number(e.target.value) || 0) })),
+      h("div", {}, h("label", { class: "field" }, "Message to the user"), h("input", { type: "text", value: s.options.message ?? "", oninput: (e) => (s.options.message = e.target.value) })),
+    );
+  }
+  return null;
+}
+
+function apPaintPcs() {
+  const root = $("#ap-pcs");
+  if (!root) return;
+  const list = apAgents();
+  const all = [...S.agents.values()];
+  const chip = (id, label, n) => h("button", { class: `chip${AP.filter === id ? " active" : ""}`, onclick: () => { AP.filter = id; apPaintPcs(); } }, `${label} ${n}`);
+  const shownAll = list.length > 0 && list.every((a) => AP.ids.has(a.id));
+  const search = h("input", { type: "search", class: "search", placeholder: "Search name, user, tag…", value: AP.query, oninput: (e) => { AP.query = e.target.value; apPaintPcsList(); } });
+  put(
+    root,
+    h("div", { class: "chips ap-chips" },
+      chip("all", "All", all.length),
+      chip("online", "Online", all.filter((a) => a.online).length),
+      chip("dirty", "Not cleaned", all.filter((a) => !a.cleaned).length),
+      chip("cleaned", "Cleaned", all.filter((a) => a.cleaned).length),
+      chip("picked", "Chosen", AP.ids.size)),
+    h("div", { class: "row", style: { margin: "8px 0" } }, search),
+    h("div", { class: "row ap-pick-tools" },
+      h("label", { class: "check inline" }, h("input", { type: "checkbox", id: "ap-all", checked: shownAll, onchange: (e) => { for (const a of apAgents()) e.target.checked ? AP.ids.add(a.id) : AP.ids.delete(a.id); apPaintPcsList(); apPaintRun(); } }), h("span", {}, "All shown")),
+      h("span", { class: "spacer" }),
+      AP.ids.size ? h("button", { class: "btn ghost small", onclick: () => { AP.ids.clear(); apPaintPcs(); apPaintRun(); } }, "Choose none") : null),
+    h("div", { class: "ap-pc-list", id: "ap-pc-list" }),
+  );
+  apPaintPcsList();
+}
+function apPaintPcsList() {
+  const root = $("#ap-pc-list");
+  if (!root) return;
+  const list = apAgents();
+  const all = $("#ap-all");
+  if (all) all.checked = list.length > 0 && list.every((a) => AP.ids.has(a.id));
+  if (!list.length) return put(root, h("div", { class: "sub", style: { padding: "10px" } }, "No computers match."));
+  put(
+    root,
+    ...list.map((a) =>
+      h(
+        "label",
+        { class: `ap-pc${AP.ids.has(a.id) ? " on" : ""}` },
+        h("input", { type: "checkbox", checked: AP.ids.has(a.id), onchange: (e) => { e.target.checked ? AP.ids.add(a.id) : AP.ids.delete(a.id); e.target.closest(".ap-pc").classList.toggle("on", e.target.checked); apPaintRun(); const x = $("#ap-all"); if (x) x.checked = apAgents().every((y) => AP.ids.has(y.id)); } }),
+        h("span", { class: `dot${a.online ? " on" : ""}` }),
+        h("span", { class: "grow" }, h("b", {}, a.hostname), h("span", { class: "sub" }, ` ${a.online ? (a.user ? a.user.split("\\").pop() : "") : `offline · ${ago(a.last_seen)}`}`)),
+        a.cleaned ? h("span", { class: "pill ok", title: `Cleaned ${new Date(a.cleaned.at).toLocaleDateString()}` }, `✓ ${ago(a.cleaned.at)}`) : null,
+      ),
+    ),
+  );
+}
+
+function apPaintRun() {
+  const root = $("#ap-run");
+  if (!root) return;
+  const ids = [...AP.ids].filter((id) => S.agents.has(id));
+  const offline = ids.filter((id) => !S.agents.get(id).online).length;
+  const n = AP.steps.length;
+  const blocked = !!POWER_LAST();
+  put(
+    root,
+    h("div", { class: "card ap-run-card" },
+      h("div", { class: "grow" },
+        h("b", {}, n ? `${plural(n, "change")} on ${plural(ids.length, "computer")}` : "Choose changes and computers"),
+        h("div", { class: "row", style: { gap: "18px", marginTop: "6px", flexWrap: "wrap" } },
+          h("label", { class: "check inline" }, h("input", { type: "checkbox", checked: AP.waitOffline, onchange: (e) => { AP.waitOffline = e.target.checked; apPaintRun(); } }), h("span", {}, "Offline PCs run it when they connect")),
+          h("label", { class: "check inline" }, h("input", { type: "checkbox", checked: AP.stopOnFail, onchange: (e) => (AP.stopOnFail = e.target.checked) }), h("span", {}, "Stop at the first failure")),
+        ),
+        offline ? h("div", { class: "sub", style: { marginTop: "4px" } }, `${offline} of them offline — ${AP.waitOffline ? "they get it when they connect" : "they will be skipped"}.`) : null,
+      ),
+      h("button", {
+        class: "btn primary big",
+        disabled: !n || !ids.length || blocked,
+        onclick: async (e) => {
+          const list = AP.steps.map((s, i) => `${i + 1}. ${s.label}`).join("\n");
+          if (!confirm(`Run on ${plural(ids.length, "computer")}:\n\n${list}`)) return;
+          e.target.disabled = true;
+          const steps = AP.steps.map((s) =>
+            s.type === "task" ? { type: "task", task: s.task, options: s.options ?? {} } : s.type === "saved_script" ? { type: "saved_script", script_id: s.script_id } : { type: "mark_cleaned", note: s.note });
+          await createJob({ kind: "batch", targets: ids, wait_offline: AP.waitOffline, payload: { name: AP.name, steps, stop_on_fail: AP.stopOnFail } });
+          e.target.disabled = false;
+        },
+      }, "Run"),
+    ),
+  );
+}
+
+async function apLoadFleet() {
+  if (AP.fleetLoading) return;
+  AP.fleetLoading = true;
+  try {
+    AP.fleet = await api("GET", "/api/metrics/fleet");
+  } catch {
+    AP.fleet = null;
+  }
+  AP.fleetLoading = false;
+  apPaintFleet();
+}
+function apPaintFleet() {
+  const root = $("#ap-fleet");
+  if (!root) return;
+  const f = AP.fleet;
+  if (!f) return put(root, h("h3", {}, "Before / after cleaning"), h("div", { class: "sub" }, "Loading…"));
+  const pct = (x) => (x == null ? "—" : `${x}%`);
+  put(
+    root,
+    h("h3", {}, "Before / after cleaning"),
+    f.rows.length
+      ? [
+          f.measured
+            ? h("div", { class: "big-stats" },
+                h("div", {}, h("span", {}, "CPU before → after"), h("b", {}, `${pct(f.cpu_before)} → ${pct(f.cpu_after)}`), delta(f.cpu_before, f.cpu_after)),
+                h("div", {}, h("span", {}, "Memory before → after"), h("b", {}, `${pct(f.mem_before)} → ${pct(f.mem_after)}`), delta(f.mem_before, f.mem_after)),
+                h("div", {}, h("span", {}, "Measured PCs"), h("b", {}, `${f.measured} of ${f.rows.length}`)))
+            : h("div", { class: "sub" }, "Cleaned PCs need some running time before and after the mark to compare."),
+          h("table", { class: "cmp" },
+            h("thead", {}, h("tr", {}, h("th", {}, "Computer"), h("th", {}, "Cleaned"), h("th", {}, "CPU"), h("th", {}, "Memory"), h("th", { class: "hide-sm" }, "Boot"))),
+            h("tbody", {}, f.rows.sort((a, b) => b.cleaned.at.localeCompare(a.cleaned.at)).map((r) =>
+              h("tr", { class: "click", onclick: () => openDevice(r.id) },
+                h("td", {}, r.hostname),
+                h("td", {}, ago(r.cleaned.at)),
+                h("td", {}, `${pct(r.before?.cpu)} → ${pct(r.after?.cpu)} `, delta(r.before?.cpu, r.after?.cpu) ?? ""),
+                h("td", {}, `${pct(r.before?.mem)} → ${pct(r.after?.mem)} `, delta(r.before?.mem, r.after?.mem) ?? ""),
+                h("td", { class: "hide-sm" }, r.boot_before || r.boot_after ? `${r.boot_before ? Math.round(r.boot_before / 1000) : "—"} → ${r.boot_after ? Math.round(r.boot_after / 1000) : "—"} s` : "—"))))),
+        ]
+      : h("div", { class: "sub" }, "No computer is marked as cleaned yet. Add “Mark as cleaned” to a run, or mark PCs on their page."),
+    h("div", { class: "sub", style: { marginTop: "8px" } }, "Averages while the PC was on: 7 days before the mark against the time since (up to 7 days). How the PC was used matters too — compare a few PCs, not one."),
+  );
+}
+function apPaintMeasure() {
+  const root = $("#ap-measure");
+  if (!root) return;
+  const cur = S.master?.metrics?.speed_every_h ?? 0;
+  const opts = [[0, "Off"], [6, "Every 6 hours"], [12, "Every 12 hours"], [24, "Once a day"], [72, "Every 3 days"], [168, "Once a week"]];
+  put(
+    root,
+    h("h3", {}, "Measurements"),
+    h("div", { class: "sub" }, "CPU and memory history is kept automatically (hourly, 14 days; daily, 6 months) from the agents' regular reports."),
+    h("label", { class: "field" }, "Scheduled internet speed tests"),
+    h("select", {
+      onchange: async (e) => {
+        try {
+          await api("PUT", "/api/settings/metrics", { speed_every_h: Number(e.target.value) });
+          toast(Number(e.target.value) ? "Speed tests scheduled" : "Scheduled speed tests off");
+        } catch (ex) {
+          fail(ex);
+        }
+      },
+    }, opts.map(([v, l]) => h("option", { value: v, selected: cur === v }, l)), opts.some(([v]) => v === cur) ? null : h("option", { value: cur, selected: true }, `Every ${cur} hours`)),
+    h("div", { class: "sub", style: { marginTop: "6px" } }, "One PC at a time (tests on the same line slow each other down), about 30 s and up to 35 MB each, against Cloudflare's speed test. Results are on each PC's page; they don't fill Activity."),
+    h("div", { class: "row", style: { marginTop: "12px", flexWrap: "wrap" } },
+      h("button", { class: "btn small", onclick: () => { AP.steps = []; ["task:perf_snapshot"].forEach(apAdd); AP.name = "Performance snapshot"; apPaintLib(); apPaintSteps(); apPaintRun(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, "Snapshot the chosen PCs…"),
+      h("button", { class: "btn small", onclick: () => { AP.steps = []; ["task:speed_test"].forEach(apAdd); AP.name = "Internet speed test"; apPaintLib(); apPaintSteps(); apPaintRun(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, "Speed-test the chosen PCs…")),
+  );
+}
+
 function renderScripts(main, full) {
   if (!full && main.dataset.view === "scripts") return;
   main.dataset.view = "scripts";

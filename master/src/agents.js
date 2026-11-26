@@ -115,6 +115,8 @@ export class AgentHub extends EventEmitter {
       pending_name: a.pending_name ?? null,
       startup: a.startup ?? null,
       startup_at: a.startup_at ?? null,
+      cleaned: a.cleaned ?? null,
+      cleanings: a.cleanings ?? [],
     }));
     this.file.touch();
   }
@@ -348,6 +350,7 @@ export class AgentHub extends EventEmitter {
         a.macs = a.telemetry.mac_addresses;
         if (a.telemetry.agent_version) a.agent_version = a.telemetry.agent_version;
         this.save();
+        this.emit("telemetry", id, a.telemetry);
         return this.changed(a);
       }
       case "Software": {

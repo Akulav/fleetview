@@ -7,7 +7,7 @@ import { readFileSync, createReadStream, existsSync, statSync } from "node:fs";
 import { join, extname, normalize } from "node:path";
 import { APP_ROOT } from "./config.js";
 import { PRESETS, WARNINGS } from "./installers.js";
-import { taskCatalog, TASKS } from "./tasks.js";
+import { taskCatalog, TASKS, cleanOptions } from "./tasks.js";
 import { ACTIONS, listScript, parseList, validate as validateAccount, actionTitle } from "./accounts.js";
 import { agentConfigJson, importIdentity, identityPath } from "./identity.js";
 import { writeJsonAtomic } from "./store.js";
@@ -27,6 +27,7 @@ const TYPES = {
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
 };
+const POWER_TASKS = new Set(["restart", "shutdown"]);
 const VERSION = JSON.parse(readFileSync(join(APP_ROOT, "package.json"), "utf8")).version;
 
 class HttpError extends Error {
@@ -36,14 +37,14 @@ class HttpError extends Error {
   }
 }
 
-export function startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync, scripts }) {
+export function startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync, scripts, metrics = null }) {
   const vault = new VaultStore(config.dataDir);
   const clients = new Set();
   const broadcast = (event, data) => {
     const line = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const res of clients) res.write(line);
   };
-  hub.on("agent", (a) => broadcast("agent", agentSummary(a, pkg)));
+  hub.on("agent", (a) => broadcast("agent", agentSummary(a, pkg, metrics)));
   hub.on("agents", () => broadcast("reload", {}));
   jobs.on("job", (j) => broadcast("job", jobSummary(j)));
   jobs.on("progress", (j) => broadcast("job", jobSummary(j)));
@@ -214,7 +215,7 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
     if (p === "/api/state" && m === "GET") {
       return json(res, {
         master: masterInfo(),
-        agents: hub.list().map((a) => agentSummary(a, pkg)),
+        agents: hub.list().map((a) => agentSummary(a, pkg, metrics)),
         jobs: jobs.list().map(jobSummary),
         installers: library.list(),
         presets: PRESETS,
@@ -243,7 +244,7 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       const a = hub.get(seg[1]);
       if (!a) throw new HttpError(404, "unknown PC");
       if (seg.length === 2 && m === "GET") {
-        return json(res, { ...agentSummary(a, pkg), telemetry: a.telemetry, software: a.software ?? [], software_at: a.software_at ?? null, addr: a.addr ?? null, macs: a.macs ?? [] });
+        return json(res, { ...agentSummary(a, pkg, metrics), telemetry: a.telemetry, software: a.software ?? [], software_at: a.software_at ?? null, addr: a.addr ?? null, macs: a.macs ?? [] });
       }
       if (seg.length === 2 && m === "PATCH") {
         const b = await body(req);
@@ -255,8 +256,19 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       }
       if (seg.length === 2 && m === "DELETE") {
         if (!hub.remove(a.agent_id)) throw new HttpError(409, "only offline PCs can be removed");
+        metrics?.forget(a.agent_id);
         audit(user, `removed ${a.hostname}`);
         return json(res, { ok: true });
+      }
+      if (seg[2] === "metrics" && m === "GET") {
+        return json(res, metrics ? metrics.forPc(a.agent_id, a.cleaned?.at) : {});
+      }
+      if (seg[2] === "cleaned" && m === "POST") {
+        const b = await body(req);
+        if (b.cleaned === false) jobs.unmarkCleaned(a.agent_id);
+        else jobs.markCleaned(a.agent_id, user, b.note);
+        audit(user, `${b.cleaned === false ? "cleared the cleaned mark on" : "marked as cleaned:"} ${a.hostname}`);
+        return json(res, { cleaned: a.cleaned ?? null });
       }
       if (seg[2] === "refresh" && m === "POST") {
         hub.send(a.agent_id, "RequestTelemetry");
@@ -307,6 +319,31 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
         res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "no-store" });
         return res.end(frame.jpeg);
       }
+    }
+
+    // ---- cleaned marks, performance, speed ----
+    if (p === "/api/cleaned" && m === "POST") {
+      const b = await body(req);
+      const ids = resolveTargets(b.targets).filter((id) => hub.get(id));
+      for (const id of ids) b.cleaned === false ? jobs.unmarkCleaned(id) : jobs.markCleaned(id, user, b.note);
+      audit(user, `${b.cleaned === false ? "cleared the cleaned mark on" : "marked as cleaned:"} ${ids.length} PC(s)`);
+      return json(res, { ok: true, count: ids.length });
+    }
+    if (p === "/api/metrics/fleet" && m === "GET") {
+      if (!metrics) throw new HttpError(404, "no metrics");
+      return json(res, { ...metrics.fleet(hub.list()), settings: metrics.settings });
+    }
+    if (p === "/api/settings/metrics" && m === "PUT") {
+      if (!metrics) throw new HttpError(404, "no metrics");
+      let s;
+      try {
+        s = metrics.setSettings(await body(req));
+      } catch (e) {
+        throw new HttpError(400, e.message);
+      }
+      audit(user, `scheduled speed tests: ${s.speed_every_h ? `every ${s.speed_every_h} h` : "off"}`);
+      broadcast("master", masterInfo());
+      return json(res, { settings: s });
     }
 
     // ---- startup apps across the fleet ----
@@ -592,12 +629,47 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       case "task": {
         const t = TASKS[p.task];
         if (!t) throw new HttpError(400, "choose a task");
-        const options = {};
-        if (t.options) {
-          if (p.options?.delay_min !== undefined) options.delay_min = Number(p.options.delay_min);
-          if (typeof p.options?.message === "string") options.message = p.options.message;
+        let options;
+        try {
+          options = cleanOptions(p.task, p.options);
+        } catch (e) {
+          throw new HttpError(400, e.message);
         }
         return jobs.create({ ...base, kind: "task", title: t.label, detail: options.message ? `in ${options.delay_min ?? t.options.delay_min} min: ${options.message}` : t.help, payload: { task: p.task, options } });
+      }
+      case "batch": {
+        const raw = Array.isArray(p.steps) ? p.steps : [];
+        if (!raw.length) throw new HttpError(400, "choose at least one change");
+        if (raw.length > 30) throw new HttpError(400, "at most 30 steps in one run");
+        const steps = raw.map((x, i) => {
+          if (x?.type === "task") {
+            const t = TASKS[x.task];
+            if (!t) throw new HttpError(400, `step ${i + 1}: unknown task`);
+            if (POWER_TASKS.has(x.task) && i !== raw.length - 1) throw new HttpError(400, `"${t.label}" must be the last step`);
+            try {
+              return { type: "task", task: x.task, options: cleanOptions(x.task, x.options), label: t.label };
+            } catch (e) {
+              throw new HttpError(400, `${t.label}: ${e.message}`);
+            }
+          }
+          if (x?.type === "saved_script") {
+            const s = scripts.get(String(x.script_id ?? ""));
+            if (!s) throw new HttpError(400, `step ${i + 1}: that saved script no longer exists`);
+            // A copy of the text: editing the script later doesn't change this run.
+            return { type: "saved_script", script_id: s.id, script: `# FleetView saved script: ${s.name.replace(/[\r\n]/g, " ")}\n${s.script}`, label: `Script: ${s.name}` };
+          }
+          if (x?.type === "mark_cleaned") return { type: "mark_cleaned", note: String(x.note ?? "").slice(0, 300), label: "Mark as cleaned" };
+          throw new HttpError(400, `step ${i + 1}: unknown kind of change`);
+        });
+        const name = String(p.name ?? "").trim().slice(0, 80);
+        const labels = steps.map((s) => s.label);
+        return jobs.create({
+          ...base,
+          kind: "batch",
+          title: name || (labels.length === 1 ? labels[0] : `${labels.length} changes: ${labels.join(", ")}`.slice(0, 120)),
+          detail: labels.map((l, i) => `${i + 1}. ${l}`).join("\n") + (p.stop_on_fail ? "\nstops at the first failure" : ""),
+          payload: { steps, stop_on_fail: !!p.stop_on_fail },
+        });
       }
       case "account": {
         // The password is kept apart from the job (memory only, never saved).
@@ -650,6 +722,7 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       agent_package: info,
       agent_build: builder.status(),
       agents_known: hub.list().length,
+      metrics: metrics?.settings ?? null,
     };
   }
 
@@ -781,7 +854,7 @@ function firstLine(s) {
   return l.length > 60 ? `${l.slice(0, 59)}…` : l;
 }
 
-export function agentSummary(a, pkg) {
+export function agentSummary(a, pkg, metrics = null) {
   const t = a.telemetry;
   const disk = t?.disks?.length
     ? t.disks.reduce((acc, d) => ({ total: acc.total + d.total_gb, free: acc.free + d.available_gb }), { total: 0, free: 0 })
@@ -809,6 +882,8 @@ export function agentSummary(a, pkg) {
     startup_count: Array.isArray(a.startup) ? a.startup.length : null,
     startup_at: a.startup_at ?? null,
     emanagement: a.emanagement ?? null,
+    cleaned: a.cleaned ?? null,
+    speed: metrics?.lastSpeed(a.agent_id) ?? null,
   };
 }
 
@@ -818,6 +893,7 @@ export function jobSummary(j) {
   for (const [id, t] of Object.entries(j.targets)) {
     counts[t.state] = (counts[t.state] ?? 0) + 1;
     targets[id] = { hostname: t.hostname, state: t.state, message: t.message, progress: t.progress, exit_code: t.exit_code ?? null, finished_at: t.finished_at ?? null };
+    if (t.steps) targets[id].steps = t.steps.map((s) => ({ label: s.label, state: s.state, message: s.message }));
   }
   return { id: j.id, kind: j.kind, title: j.title, detail: j.detail, by: j.by, created_at: j.created_at, wait_offline: j.wait_offline, counts, targets };
 }
