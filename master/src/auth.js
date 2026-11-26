@@ -6,9 +6,20 @@ import crypto from "node:crypto";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { writeJsonAtomic } from "./store.js";
-import { newSecret, otpauthUri, verifyTotp } from "./totp.js";
+import { base32Encode, newSecret, otpauthUri, verifyTotp } from "./totp.js";
 
 const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 32 };
+
+/** Recovery codes: 10 of them, 16 base32 characters (80 random bits) each,
+ * shown as XXXX-XXXX-XXXX-XXXX. Only their SHA-256 is stored: at 80 bits a
+ * slow hash adds nothing. */
+const RECOVERY_COUNT = 10;
+const RECOVERY_LEN = 16;
+// Typed by hand: 0/1/8 read as O/I/B (base32 has no 0, 1 or 8).
+const normalizeRecovery = (s) =>
+  String(s).toUpperCase().replace(/0/g, "O").replace(/1/g, "I").replace(/8/g, "B").replace(/[^A-Z2-7]/g, "");
+const formatRecovery = (s) => s.match(/.{4}/g).join("-");
+const recoveryHash = (norm) => crypto.createHash("sha256").update(`fleetview-recovery:${norm}`).digest("hex");
 
 /** "scrypt$N$r$p$salt$hash" (base64url parts). */
 export function hashPassword(password) {
@@ -102,13 +113,50 @@ export class Auth {
     return okUser && okPw;
   }
 
-  /** A code from the authenticator, used once. */
+  /** A code from the authenticator, or a recovery code; each works once.
+   * Returns "totp", "recovery" or false. */
   checkCode(code) {
-    const c = verifyTotp(this.saved.totp_secret, code, { lastCounter: this.saved.totp_last_counter ?? -1 });
-    if (c === null) return false;
-    this.saved.totp_last_counter = c;
+    const raw = String(code ?? "").replace(/\s/g, "");
+    if (/^\d{6}$/.test(raw)) {
+      const c = verifyTotp(this.saved.totp_secret, raw, { lastCounter: this.saved.totp_last_counter ?? -1 });
+      if (c === null) return false;
+      this.saved.totp_last_counter = c;
+      this.persist();
+      return "totp";
+    }
+    const norm = normalizeRecovery(raw);
+    if (norm.length !== RECOVERY_LEN) return false;
+    const want = Buffer.from(recoveryHash(norm), "hex");
+    const list = this.saved.recovery_hashes ?? [];
+    const i = list.findIndex((h) => {
+      const b = Buffer.from(h, "hex");
+      return b.length === want.length && crypto.timingSafeEqual(b, want);
+    });
+    if (i < 0) return false;
+    list.splice(i, 1);
+    this.saved.recovery_hashes = list;
     this.persist();
-    return true;
+    return "recovery";
+  }
+
+  /** Recovery codes not used yet. */
+  get recoveryLeft() {
+    return this.totpEnabled ? (this.saved.recovery_hashes ?? []).length : 0;
+  }
+
+  /** A new set of recovery codes (shown once); the old ones stop working. */
+  newRecoveryCodes() {
+    const codes = Array.from({ length: RECOVERY_COUNT }, () => formatRecovery(base32Encode(crypto.randomBytes(10))));
+    this.saved.recovery_hashes = codes.map((c) => recoveryHash(normalizeRecovery(c)));
+    this.persist();
+    return codes;
+  }
+
+  /** Replace the recovery codes; needs the password and a current code. */
+  regenerateRecovery(ip, password, code) {
+    if (!this.totpEnabled) throw new Error("two-step sign-in is off");
+    this.stepUp(ip, password, code);
+    return this.newRecoveryCodes();
   }
 
   /**
@@ -121,15 +169,21 @@ export class Auth {
       this.fail(ip);
       throw new Error("wrong user name or password");
     }
+    let used = null;
     if (this.totpEnabled) {
       if (!code) return { needCode: true };
-      if (!this.checkCode(code)) {
+      used = this.checkCode(code);
+      if (!used) {
         this.fail(ip);
         throw new Error("wrong or already used code — wait for the next one");
       }
     }
     this.failures.delete(ip);
-    return { token: this.issue(this.user, { mfa: this.totpEnabled }) };
+    return {
+      token: this.issue(this.user, { mfa: this.totpEnabled }),
+      recovery: used === "recovery",
+      recoveryLeft: this.recoveryLeft,
+    };
   }
 
   /** Re-check the password (and code, when 2FA is on) for sensitive actions. */
@@ -163,14 +217,15 @@ export class Auth {
     this.saved.totp_last_counter = c;
     this.saved.session_epoch += 1; // other sessions must sign in again, with a code
     this.pendingTotp = null;
-    this.persist();
-    return this.issue(this.user, { mfa: true });
+    const codes = this.newRecoveryCodes(); // also persists
+    return { token: this.issue(this.user, { mfa: true }), codes };
   }
 
   disableTotp(ip, password, code) {
     this.stepUp(ip, password, code);
     delete this.saved.totp_secret;
     delete this.saved.totp_last_counter;
+    delete this.saved.recovery_hashes;
     this.saved.session_epoch += 1;
     this.persist();
     return this.issue(this.user, { mfa: false });

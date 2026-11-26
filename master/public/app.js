@@ -82,6 +82,7 @@ const S = {
   warnings: {},
   tasks: [],
   accountActions: {},
+  scripts: [],
   log: [],
   view: "computers",
   filter: "all",
@@ -144,6 +145,7 @@ async function loadState() {
   S.warnings = st.warnings;
   S.tasks = st.tasks;
   S.accountActions = st.account_actions;
+  S.scripts = st.scripts ?? [];
   S.log = st.log;
   renderShell();
 }
@@ -168,6 +170,10 @@ function connectEvents() {
   });
   es.addEventListener("installers", (e) => {
     S.installers = JSON.parse(e.data);
+  });
+  es.addEventListener("scripts", (e) => {
+    S.scripts = JSON.parse(e.data);
+    if (S.view === "scripts") renderScripts($("#main"), true);
   });
   es.addEventListener("master", (e) => {
     S.master = JSON.parse(e.data);
@@ -207,7 +213,39 @@ function showLogin() {
   const user = h("input", { type: "text", autocomplete: "username", value: "admin" });
   const pw = h("input", { type: "password", autocomplete: "current-password" });
   const code = h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "123456", class: "code-input" });
-  const codeRow = h("div", { class: "hidden" }, h("label", { class: "field" }, "Code from your authenticator app"), code);
+  const codeLabel = h("label", { class: "field" }, "Code from your authenticator app");
+  const useRecovery = h(
+    "a",
+    {
+      href: "#",
+      class: "sub",
+      onclick: (e) => {
+        e.preventDefault();
+        const toRecovery = code.getAttribute("maxlength") === "6";
+        code.value = "";
+        code.classList.toggle("code-input", !toRecovery); // sized for 6 digits
+        code.style.width = toRecovery ? "100%" : "";
+        if (toRecovery) {
+          code.removeAttribute("maxlength");
+          code.setAttribute("inputmode", "text");
+          code.setAttribute("autocomplete", "off");
+          code.placeholder = "XXXX-XXXX-XXXX-XXXX";
+          codeLabel.textContent = "Recovery code (each one works once)";
+          useRecovery.textContent = "Use the authenticator app instead";
+        } else {
+          code.setAttribute("maxlength", "6");
+          code.setAttribute("inputmode", "numeric");
+          code.setAttribute("autocomplete", "one-time-code");
+          code.placeholder = "123456";
+          codeLabel.textContent = "Code from your authenticator app";
+          useRecovery.textContent = "Lost your phone? Use a recovery code";
+        }
+        code.focus();
+      },
+    },
+    "Lost your phone? Use a recovery code",
+  );
+  const codeRow = h("div", { class: "hidden" }, codeLabel, code, h("div", { style: { marginTop: "6px" } }, useRecovery));
   const btn = h("button", { class: "btn primary big", type: "submit" }, "Sign in");
   const form = h(
     "form",
@@ -228,6 +266,14 @@ function showLogin() {
           S.user = r.user;
           await loadState();
           connectEvents();
+          if (r.used_recovery) {
+            toast(
+              r.recovery_left
+                ? `Signed in with a recovery code — ${plural(r.recovery_left, "code")} left. If you lost your phone, set up two-step sign-in again in Settings.`
+                : "That was your last recovery code. Make new ones in Settings → Security now.",
+              true,
+            );
+          }
         } catch (ex) {
           err.textContent = ex.message;
           btn.disabled = false;
@@ -301,7 +347,7 @@ function renderTabs() {
   const running = [...S.jobs.values()].filter((j) => ["queued", "preparing", "sending", "installing", "running"].some((s) => j.counts[s])).length;
   const tab = (id, label, count) =>
     h("button", { class: `tab${S.view === id ? " active" : ""}`, onclick: () => go(id) }, label, count ? h("span", { class: "count" }, count) : null);
-  put(nav, tab("computers", "Computers"), tab("vault", "Passwords"), tab("activity", "Activity", running), tab("settings", "Settings"));
+  put(nav, tab("computers", "Computers"), tab("scripts", "Scripts"), tab("startup", "Startup"), tab("vault", "Passwords"), tab("activity", "Activity", running), tab("settings", "Settings"));
 }
 
 function go(view) {
@@ -316,6 +362,8 @@ function renderMain(full = false) {
   if (S.view === "computers") return renderComputers(main, full);
   if (S.view === "activity") return renderActivity(main);
   if (S.view === "settings") return renderSettings(main, full);
+  if (S.view === "scripts") return renderScripts(main, full);
+  if (S.view === "startup") return renderStartupView(main, full);
   if (S.view === "vault" && full) return renderVaultView(main);
 }
 
@@ -457,7 +505,8 @@ function renderRows() {
           h(
             "td",
             {},
-            h("div", { class: "host" }, h("span", { class: `dot${a.online ? " on" : ""}` }), a.hostname),
+            h("div", { class: "host" }, h("span", { class: `dot${a.online ? " on" : ""}` }), a.hostname,
+              a.pending_name ? h("span", { class: "pill warn", style: { marginLeft: "6px" }, title: "The new name takes effect when the PC restarts" }, `→ ${a.pending_name} · restart pending`) : null),
             h("div", { class: "sub" }, a.online ? [a.ip, a.os].filter(Boolean).join(" · ") : `offline · seen ${ago(a.last_seen)}`),
           ),
           h("td", { class: "hide-sm" }, a.user ? a.user.split("\\").pop() : h("span", { class: "sub" }, "—")),
@@ -489,7 +538,9 @@ function renderSelbar() {
       h("button", { class: "btn primary", onclick: () => openInstall({ mode: "selected" }) }, "Install software"),
       h("button", { class: "btn", onclick: () => openTasks({ ids }) }, "Maintenance"),
       h("button", { class: "btn", onclick: () => openAccountsBulk(ids) }, "Accounts"),
+      h("button", { class: "btn", onclick: () => openRunScript({ ids }) }, "Run script"),
       h("button", { class: "btn", onclick: () => openScript(ids) }, "PowerShell"),
+      h("button", { class: "btn", onclick: () => openRename(ids) }, "Rename"),
       h("button", { class: "btn", onclick: () => openMessage(ids) }, "Message"),
       h("button", { class: "btn", onclick: () => openAgentSettings(ids) }, "Agent settings"),
       h("button", { class: "btn ghost", onclick: () => { S.selected.clear(); renderRows(); } }, "Clear"),
@@ -821,6 +872,7 @@ function openJob(id) {
         h("h3", {}, j.title),
         h("div", { class: "sub" }, `${new Date(j.created_at).toLocaleString()} · by ${j.by || "—"}`),
         j.detail ? h("pre", { class: "mono", style: { whiteSpace: "pre-wrap", background: "var(--surface-2)", padding: "10px", borderRadius: "8px" } }, j.detail) : null,
+        det.script ? h("details", { style: { marginTop: "10px" } }, h("summary", { class: "sub" }, "Script that ran"), h("pre", { class: "mono script-view" }, det.script)) : null,
         summaryBar(j, true),
         h(
           "div",
@@ -891,13 +943,55 @@ function summaryBar(j, withText) {
 }
 
 // ---- device ----
-function openDevice(id) {
-  let tab = "overview";
+function openDevice(id, startTab = "overview") {
+  let tab = startTab;
   let detail = null;
   let shot = null;
   let swQuery = "";
   // Accounts tab: { list, at, loading, error, form }
   const acc = { list: null, at: null, loading: false, error: "", form: null };
+  // Startup tab. pending: job id → { key, sid, enable } while a toggle runs.
+  const su = { list: null, at: null, loading: false, error: "", showMs: false, pending: new Map() };
+  su.load = async () => {
+    su.loading = true;
+    su.error = "";
+    d.paint();
+    try {
+      const online = S.agents.get(id)?.online;
+      const r = online ? await api("POST", `/api/agents/${id}/startup`) : await api("GET", `/api/agents/${id}/startup`);
+      su.list = r.startup;
+      su.at = r.at;
+    } catch (e) {
+      su.error = e.message;
+    }
+    su.loading = false;
+    d.paint();
+  };
+  su.toggle = async (e, enable) => {
+    try {
+      const { job } = await api("POST", "/api/jobs", { kind: "startup", targets: [id], payload: { kind: e.kind, scope: e.scope, sid: e.sid, name: e.name, task_path: e.task_path, enable } });
+      S.jobs.set(job.id, job);
+      su.pending.set(job.id, { key: e.key, sid: e.sid, enable, entry: e });
+      d.paint();
+    } catch (ex) {
+      fail(ex);
+    }
+  };
+  /** Pick up the outcome of toggles (from the live job updates). */
+  const settleToggles = () => {
+    let changed = false;
+    for (const [jid, p] of su.pending) {
+      const t = S.jobs.get(jid)?.targets[id];
+      if (!t || !["succeeded", "failed", "skipped", "cancelled"].includes(t.state)) continue;
+      su.pending.delete(jid);
+      changed = true;
+      if (t.state === "succeeded") {
+        p.entry.enabled = p.enable;
+        toast(`${p.enable ? "Enabled" : "Disabled"} ${p.entry.name}`);
+      } else toast(`${p.entry.name}: ${t.message || t.state}`, true);
+    }
+    return changed;
+  };
   async function loadAccounts() {
     acc.loading = true;
     acc.error = "";
@@ -967,6 +1061,7 @@ function openDevice(id) {
     title: S.agents.get(id)?.hostname ?? "Computer",
     async render() {
       d.paint();
+      if (tab === "startup" && !su.list && !su.loading) su.load();
       try {
         detail = await api("GET", `/api/agents/${id}`);
       } catch (e) {
@@ -978,13 +1073,15 @@ function openDevice(id) {
       const a = S.agents.get(id);
       if (!a) return closeDrawer();
       const t = detail?.telemetry;
-      const sub = h("div", { class: "subtabs" }, ["overview", "software", "accounts", "history"].map((k) => h("button", { class: tab === k ? "active" : "", onclick: () => { tab = k; if (k === "accounts" && !acc.list && !acc.loading) loadAccounts(); d.paint(); } }, { overview: "Overview", software: `Programs (${detail?.software?.length ?? a.software_count})`, accounts: "Accounts", history: "History" }[k])));
+      const sub = h("div", { class: "subtabs" }, ["overview", "software", "startup", "accounts", "history"].map((k) => h("button", { class: tab === k ? "active" : "", onclick: () => { tab = k; if (k === "accounts" && !acc.list && !acc.loading) loadAccounts(); if (k === "startup" && !su.list && !su.loading) su.load(); d.paint(); } }, { overview: "Overview", software: `Programs (${detail?.software?.length ?? a.software_count})`, startup: "Startup", accounts: "Accounts", history: "History" }[k])));
       const actions = h(
         "div",
         { class: "actions" },
         h("button", { class: "btn primary", onclick: () => openInstall({ ids: [id] }) }, "Install software"),
         h("button", { class: "btn", onclick: () => openTasks({ ids: [id] }) }, "Maintenance"),
+        h("button", { class: "btn", onclick: () => openRunScript({ ids: [id] }) }, "Run script"),
         h("button", { class: "btn", onclick: () => openScript([id]) }, "PowerShell"),
+        h("button", { class: "btn", onclick: () => openRename([id]) }, "Rename"),
         h("button", { class: "btn", disabled: !a.online, onclick: takeShot }, "Screenshot"),
         h("button", { class: "btn", onclick: () => openMessage([id]) }, "Message"),
         h("button", { class: "btn", onclick: () => openAgentSettings([id]) }, "Agent settings"),
@@ -999,6 +1096,7 @@ function openDevice(id) {
             "div",
             { class: "facts" },
             fact("Status", a.online ? "Online" : `Offline — seen ${ago(a.last_seen)}`),
+            a.pending_name ? fact("Rename", `to ${a.pending_name} — pending restart`) : null,
             fact("User", a.user),
             fact("Windows", a.os),
             fact("IP address", a.ip),
@@ -1015,6 +1113,8 @@ function openDevice(id) {
         ];
       } else if (tab === "accounts") {
         content = accountsTab(a);
+      } else if (tab === "startup") {
+        content = startupTab(a, su, () => d.paint());
       } else if (tab === "software") {
         const list = (detail?.software ?? []).filter((s) => !swQuery || s.name.toLowerCase().includes(swQuery.toLowerCase())).sort((x, y) => x.name.localeCompare(y.name));
         content = [
@@ -1042,7 +1142,7 @@ function openDevice(id) {
     },
     live() {
       // Don't repaint under the user's typing (search box, account form).
-      if (tab !== "software" && !(tab === "accounts" && acc.form)) d.paint();
+      if (settleToggles() || (tab !== "software" && !(tab === "accounts" && acc.form))) d.paint();
     },
   };
   async function takeShot() {
@@ -1312,6 +1412,349 @@ function openEmanagementSetting() {
   openDrawer(d);
 }
 
+// ----------------------------------------------------------------- rename --
+// Same rules as the master (src/rename.js), so problems show while typing.
+function checkPcName(n) {
+  if (!n) return "enter a name";
+  if (n.length > 15) return `${n}: longer than 15 characters`;
+  if (!/^[A-Za-z0-9-]+$/.test(n)) return `${n}: only letters, digits and hyphens`;
+  if (/^\d+$/.test(n)) return `${n}: can't be only digits`;
+  if (n.startsWith("-") || n.endsWith("-")) return `${n}: can't start or end with a hyphen`;
+  return null;
+}
+function expandPattern(pattern, count, start) {
+  const m = /#+/.exec(pattern);
+  const first = Math.max(0, Math.floor(Number(start) || 0));
+  return Array.from({ length: count }, (_, i) =>
+    m ? pattern.slice(0, m.index) + String(first + i).padStart(m[0].length, "0") + pattern.slice(m.index + m[0].length) : pattern,
+  );
+}
+const byHost = (a, b) => a.hostname.localeCompare(b.hostname, undefined, { numeric: true, sensitivity: "base" });
+
+function openRename(ids) {
+  const list = ids.map((id) => S.agents.get(id)).filter(Boolean).sort(byHost);
+  if (!list.length) return toast("Choose at least one computer", true);
+  const single = list.length === 1;
+  const st = { name: single ? list[0].pending_name || list[0].hostname : "", pattern: "PC-###", start: 1, restart: false, delay: 1, waitOffline: true, status: null };
+  const names = () => {
+    if (single) return { [list[0].id]: st.name.trim() };
+    const n = expandPattern(st.pattern.trim(), list.length, st.start);
+    return Object.fromEntries(list.map((a, i) => [a.id, n[i]]));
+  };
+  const problems = () => {
+    const out = [];
+    const nm = names();
+    const seen = new Map();
+    for (const [id, n] of Object.entries(nm)) {
+      const e = checkPcName(n);
+      if (e) out.push(e);
+      else if (seen.has(n.toUpperCase())) out.push(`${n} would be used twice — put # in the pattern for a number`);
+      seen.set(n.toUpperCase(), id);
+      const other = [...S.agents.values()].find((x) => x.id !== id && !nm[x.id] && [x.hostname, x.pending_name].some((v) => String(v ?? "").toUpperCase() === n.toUpperCase()));
+      if (other && !e) out.push(`${n} is already used by ${other.hostname}`);
+    }
+    return [...new Set(out)];
+  };
+  if (single && list[0].online) {
+    api("POST", `/api/agents/${list[0].id}/name`)
+      .then((r) => { st.status = r; d.render(); })
+      .catch((e) => { st.status = { error: e.message }; d.render(); });
+  }
+  const d = {
+    title: single ? `Rename ${list[0].hostname}` : `Rename ${plural(list.length, "computer")}`,
+    render() {
+      const a0 = list[0];
+      const status = single
+        ? h("div", { class: "note info" },
+            !a0.online ? "The PC is offline: the rename runs when it connects (if ticked below)."
+            : !st.status ? "Checking the PC's name…"
+            : st.status.error ? `Couldn't read the PC's name: ${st.status.error}`
+            : [`Current name: ${st.status.active}.`, st.status.pending ? h("b", {}, ` Rename to ${st.status.pending} is pending restart.`) : " No rename pending.",
+               st.status.domain ? " Domain-joined: renaming as SYSTEM only works if the PC may rename its own AD account; otherwise do it with domain credentials." : ""])
+        : null;
+      const nameInput = h("input", { type: "text", class: "mono", maxlength: "15", value: st.name, autocomplete: "off", oninput: (e) => { st.name = e.target.value; paintCheck(); } });
+      const patternInput = h("input", { type: "text", class: "mono", value: st.pattern, autocomplete: "off", oninput: (e) => { st.pattern = e.target.value; paintCheck(); } });
+      const startInput = h("input", { type: "text", value: String(st.start), oninput: (e) => { st.start = e.target.value; paintCheck(); } });
+      put(d.body,
+        status,
+        single
+          ? h("div", {}, h("label", { class: "field" }, "New name"), nameInput)
+          : h("div", {},
+              h("div", { class: "grid2" },
+                h("div", {}, h("label", { class: "field" }, "Pattern (# = number, ### = 001, 002…)"), patternInput),
+                h("div", {}, h("label", { class: "field" }, "First number"), startInput)),
+              h("div", { class: "sub", style: { marginTop: "6px" } }, "PCs are numbered in name order.")),
+        h("div", { id: "rename-check" }),
+        h("div", { class: "step", style: { marginTop: "16px" } },
+          h("label", { class: "check" }, h("input", { type: "checkbox", checked: st.restart, onchange: (e) => { st.restart = e.target.checked; st.waitOffline = !st.restart; d.render(); } }),
+            h("span", {}, "Restart after renaming", h("small", {}, "The new name only takes effect after a restart. Signed-in users get a warning, then the PC restarts — unsaved work is lost."))),
+          st.restart ? h("div", { class: "grid2" }, h("div", {}, h("label", { class: "field" }, "Restart in (minutes)"), h("input", { type: "text", value: String(st.delay), oninput: (e) => (st.delay = e.target.value) }))) : null,
+          h("label", { class: "check" }, h("input", { type: "checkbox", checked: st.waitOffline, onchange: (e) => (st.waitOffline = e.target.checked) }), h("span", {}, "Rename offline computers when they come back")),
+        ),
+      );
+      paintCheck();
+      if (single) setTimeout(() => nameInput.focus(), 0);
+    },
+  };
+  function paintCheck() {
+    const box = $("#rename-check", d.body);
+    if (!box) return;
+    const errs = problems();
+    const nm = names();
+    put(box,
+      errs.length ? h("div", { class: "note" }, errs.slice(0, 6).map((e) => h("div", {}, e))) : null,
+      !single
+        ? h("div", { class: "card", style: { marginTop: "10px", maxHeight: "320px", overflow: "auto" } },
+            h("table", {}, h("tbody", {}, list.map((a) => h("tr", {},
+              h("td", {}, h("span", { class: `dot${a.online ? " on" : ""}` }), " ", a.hostname, a.pending_name ? h("span", { class: "pill warn", style: { marginLeft: "6px" } }, `pending: ${a.pending_name}`) : null),
+              h("td", { class: "mono" }, "→ ", nm[a.id]))))))
+        : null,
+    );
+    const n = list.length;
+    put(d.footer,
+      h("button", { class: "btn primary big", disabled: errs.length > 0, onclick: async (e) => {
+        const delay = Math.max(0, Math.min(60, Number(st.delay) || 0));
+        if (st.restart && !confirm(`Rename and restart ${plural(n, "computer")} ${delay ? `in ${delay} min` : "right away"}? Signed-in users lose unsaved work.`)) return;
+        e.target.disabled = true;
+        await createJob({ kind: "rename", targets: list.map((a) => a.id), wait_offline: st.waitOffline, payload: { names: names(), restart: st.restart, delay_sec: delay * 60, pattern: single ? undefined : st.pattern } });
+      } }, single ? `Rename to ${st.name.trim() || "…"}` : `Rename ${plural(n, "computer")}`),
+      h("span", { class: "sub" }, st.restart ? "then restart" : "takes effect at the next restart"),
+    );
+  }
+  openDrawer(d);
+}
+
+// ---------------------------------------------------------- saved scripts --
+function renderScripts(main, full) {
+  if (!full && main.dataset.view === "scripts") return;
+  main.dataset.view = "scripts";
+  const list = [...S.scripts].sort((a, b) => a.name.localeCompare(b.name));
+  put(main,
+    h("div", { class: "page-head" }, h("h1", {}, "Scripts"), h("div", { class: "spacer" }), h("button", { class: "btn primary", onclick: () => openScriptEditor() }, "＋ New script")),
+    h("p", { class: "sub", style: { marginTop: "-6px", marginBottom: "14px" } }, "PowerShell scripts saved on the master. Run one on a PC, the selected PCs or the whole fleet (offline PCs run it when they connect); every PC's result is in Activity. Scripts run as SYSTEM with no window."),
+    h("div", { class: "card card-pad script-list" },
+      list.length
+        ? list.map((s) => h("div", { class: "sw script-row" },
+            h("div", { class: "grow" },
+              h("b", {}, s.name), " ",
+              s.auto_new ? h("span", { class: "pill blue", title: s.auto_since ? `since ${new Date(s.auto_since).toLocaleString()}` : "" }, `Runs on new PCs${s.auto_count ? ` · ${s.auto_count} so far` : ""}`) : null,
+              s.description ? h("div", { class: "sub" }, s.description) : null,
+              h("div", { class: "sub" }, `${plural(s.script.split("\n").length, "line")} · changed ${ago(s.updated_at)}${s.by ? ` · ${s.by}` : ""}`)),
+            h("button", { class: "btn small primary", onclick: () => openRunScript({ scriptId: s.id }) }, "Run…"),
+            h("button", { class: "btn small", onclick: () => openScriptEditor(s.id) }, "Edit"),
+            h("button", { class: "btn small ghost danger", onclick: () => confirm(`Delete the script “${s.name}”? Its past runs stay in Activity.`) && api("DELETE", `/api/scripts/${s.id}`).then(() => toast("Deleted")).catch(fail) }, "Delete"),
+          ))
+        : h("div", { class: "empty" }, h("b", {}, "No saved scripts"), "Save a PowerShell script once, then run it on any computers with one click."),
+    ),
+  );
+}
+
+function openScriptEditor(id) {
+  const s = id ? S.scripts.find((x) => x.id === id) : null;
+  const name = h("input", { type: "text", value: s?.name ?? "", placeholder: "e.g. Remove bloatware", maxlength: "100" });
+  const desc = h("input", { type: "text", value: s?.description ?? "", placeholder: "What it does (optional)" });
+  const ta = h("textarea", { class: "mono script-edit", rows: 22, spellcheck: "false", value: s?.script ?? "", placeholder: "# Runs as SYSTEM\nGet-Service | Where-Object Status -eq Running" });
+  ta.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    e.preventDefault(); // indent instead of leaving the editor
+    ta.setRangeText("  ", ta.selectionStart, ta.selectionEnd, "end");
+  });
+  const auto = h("input", { type: "checkbox", checked: !!s?.auto_new });
+  const save = async (andRun) => {
+    try {
+      const b = { name: name.value, description: desc.value, script: ta.value, auto_new: auto.checked };
+      const r = s ? await api("PUT", `/api/scripts/${s.id}`, b) : await api("POST", "/api/scripts", b);
+      const i = S.scripts.findIndex((x) => x.id === r.script.id);
+      if (i >= 0) S.scripts[i] = r.script;
+      else S.scripts.push(r.script);
+      toast("Saved");
+      if (andRun) openRunScript({ scriptId: r.script.id });
+      else closeDrawer();
+      if (S.view === "scripts") renderScripts($("#main"), true);
+    } catch (e) {
+      fail(e);
+    }
+  };
+  const d = {
+    title: s ? `Edit “${s.name}”` : "New script",
+    render() {
+      put(d.body,
+        h("label", { class: "field" }, "Name"), name,
+        h("label", { class: "field" }, "Description"), desc,
+        h("label", { class: "field" }, "PowerShell"), ta,
+        h("div", { class: "sub", style: { marginTop: "6px" } }, "Runs as SYSTEM with Windows PowerShell 5.1, no window, up to 4 hours. The last line it prints is the result shown in Activity; exit with a non-zero code to mark a PC as failed."),
+        h("label", { class: "check", style: { marginTop: "14px" } }, auto,
+          h("span", {}, "Run automatically on new PCs", h("small", {}, "Every PC that enrolls from now on runs it once, shortly after it first connects. PCs you already have are not affected — run it on them with Run…."))),
+      );
+      put(d.footer,
+        h("button", { class: "btn primary big", onclick: () => save(false) }, "Save"),
+        h("button", { class: "btn", onclick: () => save(true) }, "Save and run…"),
+        h("span", { class: "spacer" }),
+        h("button", { class: "btn ghost", onclick: closeDrawer }, "Cancel"));
+      if (!s) setTimeout(() => name.focus(), 0);
+    },
+  };
+  openDrawer(d);
+}
+
+function openRunScript({ ids, scriptId } = {}) {
+  const tg = newTargets(ids);
+  const st = { id: scriptId ?? null, waitOffline: true, show: false };
+  const d = {
+    title: "Run a saved script",
+    render() {
+      const list = [...S.scripts].sort((a, b) => a.name.localeCompare(b.name));
+      const s = list.find((x) => x.id === st.id);
+      put(d.body,
+        h("div", { class: "step" }, h("div", { class: "step-title" }, h("span", { class: "step-num" }, "1"), "Script"),
+          list.length
+            ? h("div", { class: "lib" }, list.map((x) => h("button", { class: `lib-item${x.id === st.id ? " active" : ""}`, onclick: () => { st.id = x.id; st.show = false; d.render(); } },
+                h("span", { class: "name" }, x.name), x.auto_new ? h("span", { class: "pill blue" }, "new PCs") : null)))
+            : h("div", { class: "empty" }, "No saved scripts yet. ", h("button", { class: "btn small", onclick: () => openScriptEditor() }, "New script")),
+          s ? h("div", { class: "note info" }, s.description || "No description.", " ",
+                h("a", { href: "#", onclick: (e) => { e.preventDefault(); st.show = !st.show; d.render(); } }, st.show ? "Hide script" : "Show script")) : null,
+          s && st.show ? h("pre", { class: "mono script-view" }, s.script) : null),
+        h("div", { class: "step" }, h("div", { class: "step-title" }, h("span", { class: "step-num" }, "2"), "Computers"), targetPicker(tg, () => d.render())),
+        h("label", { class: "check" }, h("input", { type: "checkbox", checked: st.waitOffline, onchange: (e) => { st.waitOffline = e.target.checked; d.footerRender(); } }), h("span", {}, "Run on offline computers when they come back")),
+      );
+      d.footerRender();
+    },
+    footerRender() {
+      const n = targetIds(tg).length;
+      const s = S.scripts.find((x) => x.id === st.id);
+      put(d.footer,
+        h("button", { class: "btn primary big", disabled: !n || !s, onclick: async (e) => {
+          if (n > 1 && !confirm(`Run “${s.name}” on ${plural(n, "computer")}?`)) return;
+          e.target.disabled = true;
+          await createJob({ kind: "saved_script", targets: targetParam(tg), wait_offline: st.waitOffline, payload: { script_id: s.id } });
+        } }, !s ? "Choose a script" : n ? `Run on ${plural(n, "computer")}` : "Choose computers"),
+        h("span", { class: "sub" }, offlineNote(tg, st.waitOffline)));
+    },
+    live() {
+      d.footerRender();
+      $("#target-seg", d.body)?.replaceWith(targetPicker(tg, () => d.render()));
+    },
+  };
+  openDrawer(d);
+}
+
+// ------------------------------------------------------------ startup apps --
+const STARTUP_KIND = { run: "Registry Run", runonce: "Run once", folder: "Startup folder", task: "Scheduled task" };
+function startupWhere(e) {
+  if (e.kind === "task") return `${e.trigger === "boot" ? "at boot" : "at sign-in"}${e.user ? ` · as ${e.user}` : ""}`;
+  if (e.scope === "user") return e.user ? e.user.split("\\").pop() : "each user";
+  return e.scope === "machine32" ? "all users (32-bit)" : "all users";
+}
+function enabledPill(v) {
+  return v === null ? h("span", { class: "pill", title: "This user is signed out, so their setting can't be read" }, "unknown") : v ? h("span", { class: "pill ok" }, "Enabled") : h("span", { class: "pill" }, "Disabled");
+}
+
+/** The Startup tab of a PC's page. `su` holds its state. */
+function startupTab(a, su, repaint) {
+  const head = h("div", { class: "row", style: { marginBottom: "8px", flexWrap: "wrap" } },
+    h("span", { class: "sub grow" }, su.loading ? "Asking the PC…" : su.at ? `Read ${ago(su.at)}` : ""),
+    h("label", { class: "check inline" }, h("input", { type: "checkbox", checked: su.showMs, onchange: (e) => { su.showMs = e.target.checked; repaint(); } }), h("span", {}, "Windows tasks")),
+    h("button", { class: "btn small", disabled: !a.online || su.loading, onclick: su.load }, "Reload"));
+  if (su.error) return [head, h("div", { class: "note" }, su.error)];
+  if (!su.list) return [head, !a.online ? h("div", { class: "empty" }, "The PC is offline and was never scanned.") : null];
+  const shown = su.list.filter((e) => su.showMs || !e.microsoft);
+  const hidden = su.list.length - shown.length;
+  const groups = ["run", "folder", "runonce", "task"].map((k) => [k, shown.filter((e) => e.kind === k)]).filter(([, l]) => l.length);
+  return [
+    head,
+    !a.online ? h("div", { class: "note" }, "The PC is offline — this is the last list it sent.") : null,
+    h("div", { class: "sub", style: { marginBottom: "8px" } }, "Disabling works like Task Manager: the entry stays, Windows skips it at sign-in. Only signed-in users' own entries are listed."),
+    groups.map(([k, l]) => h("div", {},
+      h("div", { class: "sub", style: { margin: "14px 0 4px", fontWeight: "600" } }, `${STARTUP_KIND[k]} (${l.length})`),
+      l.map((e) => {
+        const busy = [...su.pending.values()].some((p) => p.key === e.key && p.sid === e.sid);
+        return h("div", { class: "sw" },
+          h("div", { class: "grow", style: { minWidth: "0" } },
+            h("b", {}, e.name), " ", enabledPill(e.enabled), " ", h("span", { class: "pill blue" }, startupWhere(e)),
+            h("div", { class: "sub mono startup-cmd", title: e.location }, e.command || "—")),
+          e.can_toggle
+            ? h("button", { class: "btn small", disabled: !a.online || busy, onclick: () => su.toggle(e, e.enabled === false) }, busy ? "…" : e.enabled === false ? "Enable" : "Disable")
+            : null);
+      }))),
+    !shown.length ? h("div", { class: "empty" }, "Nothing starts automatically on this PC.") : null,
+    hidden ? h("div", { class: "sub", style: { marginTop: "10px" } }, `${plural(hidden, "Windows task")} hidden.`) : null,
+  ];
+}
+
+const SU = { data: null, loading: false, query: "", showMs: false, open: new Set() };
+async function loadFleetStartup(scan) {
+  SU.loading = scan ? "scan" : "load";
+  paintFleetStartup();
+  try {
+    SU.data = scan ? await api("POST", "/api/startup/scan", {}) : await api("GET", "/api/startup/fleet");
+    if (scan) {
+      toast(`Scanned ${plural(SU.data.scanned_now, "computer")}`);
+      SU.data.errors?.slice(0, 3).forEach((e) => toast(e, true));
+    }
+  } catch (e) {
+    fail(e);
+  }
+  SU.loading = false;
+  paintFleetStartup();
+}
+function renderStartupView(main, full) {
+  if (!full && main.dataset.view === "startup") return;
+  main.dataset.view = "startup";
+  put(main, h("div", { id: "startup-view" }));
+  paintFleetStartup();
+  if (!SU.data && !SU.loading) loadFleetStartup(false);
+}
+function paintFleetStartup() {
+  const root = $("#startup-view");
+  if (!root) return;
+  const online = [...S.agents.values()].filter((a) => a.online).length;
+  const data = SU.data;
+  const q = SU.query.trim().toLowerCase();
+  const rows = (data?.entries ?? []).filter((e) => (SU.showMs || !e.microsoft) && (!q || e.name.toLowerCase().includes(q) || e.command.toLowerCase().includes(q)));
+  const toggleAll = (e, enable) => {
+    const ids = e.pcs.filter((p) => S.agents.get(p.id)?.online && (enable ? p.enabled === false : p.enabled !== false)).map((p) => p.id);
+    if (!ids.length) return toast(enable ? "Already enabled on every online PC that has it" : "Not enabled on any online PC that has it", true);
+    if (!confirm(`${enable ? "Enable" : "Disable"} “${e.name}” at startup on ${plural(ids.length, "online computer")}?`)) return;
+    createJob({ kind: "startup", targets: ids, payload: { kind: e.kind, scope: e.scope, name: e.name, task_path: e.task_path, enable } });
+  };
+  const search = h("input", { type: "search", class: "search", placeholder: "Search name or command…", value: SU.query, oninput: (ev) => { SU.query = ev.target.value; paintFleetStartup(); const i = $("#startup-view input[type=search]"); i?.focus(); i?.setSelectionRange(SU.query.length, SU.query.length); } });
+  put(root,
+    h("div", { class: "page-head" }, h("h1", {}, "Startup apps"), h("div", { class: "spacer" }),
+      h("button", { class: "btn primary", disabled: !online || !!SU.loading, onclick: () => loadFleetStartup(true) }, SU.loading === "scan" ? "Scanning…" : `Scan ${plural(online, "online computer")}`)),
+    h("p", { class: "sub", style: { marginTop: "-6px", marginBottom: "14px" } },
+      data ? `${plural(data.scanned, "computer")} of ${data.pcs} scanned. ` : "",
+      "What starts with Windows on your PCs and how many have it. Click an entry to see the PCs; open a PC → Startup to change just that one."),
+    h("div", { class: "card" },
+      h("div", { class: "toolbar" }, search, h("div", { class: "chips" }, h("button", { class: `chip${SU.showMs ? " active" : ""}`, onclick: () => { SU.showMs = !SU.showMs; paintFleetStartup(); } }, "Show Windows tasks"))),
+      !data
+        ? h("div", { class: "empty" }, SU.loading ? "Loading…" : "")
+        : !data.scanned
+          ? h("div", { class: "empty" }, h("b", {}, "No computer scanned yet"), "Scan the online computers to list their startup apps.")
+          : h("table", { class: "startup-table" },
+              h("thead", {}, h("tr", {}, h("th", {}, "Entry"), h("th", { class: "hide-sm" }, "Type"), h("th", {}, "PCs"), h("th", {}, "Enabled"), h("th", {}))),
+              h("tbody", {}, rows.map((e) => [
+                h("tr", { onclick: () => { SU.open.has(e.key) ? SU.open.delete(e.key) : SU.open.add(e.key); paintFleetStartup(); } },
+                  h("td", { style: { maxWidth: "460px" } }, h("b", {}, e.name), h("div", { class: "sub mono startup-cmd" }, e.command || "—", e.variants > 1 ? ` (+${e.variants - 1} other command${e.variants > 2 ? "s" : ""})` : "")),
+                  h("td", { class: "hide-sm" }, STARTUP_KIND[e.kind], h("div", { class: "sub" }, e.kind === "task" ? e.task_path : e.scope === "user" ? "per user" : e.scope === "machine32" ? "all users (32-bit)" : "all users")),
+                  h("td", {}, h("b", {}, e.count), h("span", { class: "sub" }, ` / ${data.scanned}`)),
+                  h("td", {}, e.enabled_count === e.count ? h("span", { class: "pill ok" }, "all") : e.enabled_count === 0 ? h("span", { class: "pill" }, "none") : h("span", { class: "pill warn" }, `${e.enabled_count} of ${e.count}`)),
+                  h("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
+                    e.can_toggle && e.enabled_count ? h("button", { class: "btn small", onclick: (ev) => { ev.stopPropagation(); toggleAll(e, false); } }, "Disable on all") : null,
+                    e.can_toggle && e.enabled_count < e.count ? h("button", { class: "btn small ghost", onclick: (ev) => { ev.stopPropagation(); toggleAll(e, true); } }, "Enable") : null)),
+                SU.open.has(e.key)
+                  ? h("tr", { class: "startup-pcs" }, h("td", { colspan: 5 }, h("div", { class: "pcs-chips" }, e.pcs.slice().sort(byHost).map((p) => {
+                      const a = S.agents.get(p.id);
+                      return h("button", { class: "chip", onclick: (ev) => { ev.stopPropagation(); openDevice(p.id, "startup"); } },
+                        h("span", { class: `dot${a?.online ? " on" : ""}` }), " ", a?.hostname ?? p.hostname, p.enabled === false ? " (off)" : "");
+                    }))))
+                  : null,
+              ])),
+            ),
+      data && data.scanned && !rows.length ? h("div", { class: "empty" }, "Nothing matches.") : null,
+    ),
+  );
+}
+
 // ---------------------------------------------------------------- activity --
 function renderActivity(main) {
   const jobs = [...S.jobs.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
@@ -1433,6 +1876,33 @@ function emgText(e) {
   }[e.state] ?? e.state;
 }
 
+/** Show freshly made recovery codes once; `done` repaints the card. */
+function showRecoveryCodes(card, codes, done) {
+  const text = `FleetView recovery codes (${location.host}, made ${new Date().toLocaleString()})\n` +
+    "Each code works once, in place of an authenticator code.\n\n" + codes.join("\n") + "\n";
+  const saved = h("input", { type: "checkbox" });
+  const finish = h("button", { class: "btn primary", disabled: true, onclick: () => done() }, "Done");
+  saved.addEventListener("change", () => (finish.disabled = !saved.checked));
+  put(
+    card,
+    h("h3", {}, "Save your recovery codes"),
+    h("p", { class: "sub" }, "If you lose your phone, each of these codes signs you in once instead of an authenticator code. Keep them somewhere safe and offline (printed, or in another password manager). They won't be shown again."),
+    h("div", { class: "recovery-codes mono" }, codes.map((c) => h("span", {}, c))),
+    h("div", { class: "row", style: { marginTop: "12px", flexWrap: "wrap" } },
+      h("button", { class: "btn", onclick: () => navigator.clipboard.writeText(text).then(() => toast("Copied")).catch(fail) }, "Copy"),
+      h("button", { class: "btn", onclick: () => {
+        const a = h("a", { href: URL.createObjectURL(new Blob([text], { type: "text/plain" })), download: "fleetview-recovery-codes.txt" });
+        document.body.append(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+      } }, "Download .txt"),
+      h("button", { class: "btn", onclick: () => window.print() }, "Print")),
+    h("label", { class: "check", style: { marginTop: "14px", display: "flex", gap: "8px", alignItems: "center" } }, saved, "I've saved these codes"),
+    h("div", { style: { marginTop: "10px" } }, finish),
+  );
+}
+
 // ---- Security: two-step sign-in (TOTP) ----
 function securityCard() {
   const card = h("div", { class: "card card-pad", style: { marginTop: "16px" } });
@@ -1444,12 +1914,31 @@ function securityCard() {
       return;
     }
     const pw = h("input", { type: "password", autocomplete: "current-password", placeholder: "Console password" });
-    const code = h("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "Code", class: "code-input" });
+    const code = h("input", { type: "text", autocomplete: "one-time-code", placeholder: "Code", class: "code-input" });
     if (me.totp_enabled) {
+      const pw2 = h("input", { type: "password", autocomplete: "current-password", placeholder: "Console password" });
+      const code2 = h("input", { type: "text", autocomplete: "one-time-code", placeholder: "Code", class: "code-input" });
+      const left = me.recovery_left ?? 0;
       put(
         card,
         h("h3", {}, "Two-step sign-in ", h("span", { class: "pill ok" }, "On")),
         h("p", { class: "sub" }, "Signing in needs your password and a code from your authenticator app. The password vault requires it."),
+        h(
+          "p",
+          { class: left > 2 ? "sub" : "note" },
+          left
+            ? `Recovery codes: ${left} of 10 left. Each one replaces an authenticator code once, e.g. if you lose your phone.`
+            : "No recovery codes left: if you lose your phone you can only get in through the server. Make new ones below.",
+        ),
+        h("details", { open: left === 0 }, h("summary", { class: "sub" }, "Make new recovery codes…"),
+          h("p", { class: "sub" }, "The old codes stop working."),
+          h("div", { class: "row", style: { marginTop: "10px", flexWrap: "wrap" } }, pw2, code2,
+            h("button", { class: "btn", onclick: async () => {
+              try {
+                const r = await api("POST", "/api/2fa/recovery", { password: pw2.value, code: code2.value });
+                showRecoveryCodes(card, r.recovery_codes, paint);
+              } catch (e) { fail(e); }
+            } }, "Make new codes"))),
         h("details", {}, h("summary", { class: "sub" }, "Turn it off…"),
           h("div", { class: "row", style: { marginTop: "10px", flexWrap: "wrap" } }, pw, code,
             h("button", { class: "btn danger", onclick: async () => {
@@ -1482,7 +1971,11 @@ function securityCard() {
             h("label", { class: "field" }, "Then type the code the app shows"),
             h("div", { class: "row" }, confirmCode,
               h("button", { class: "btn primary", onclick: async () => {
-                try { await api("POST", "/api/2fa/confirm", { code: confirmCode.value }); toast("Two-step sign-in is on"); paint(); } catch (e) { fail(e); }
+                try {
+                  const r = await api("POST", "/api/2fa/confirm", { code: confirmCode.value });
+                  toast("Two-step sign-in is on");
+                  showRecoveryCodes(card, r.recovery_codes, paint);
+                } catch (e) { fail(e); }
               } }, "Turn on"),
               h("button", { class: "btn ghost", onclick: paint }, "Cancel")),
           );

@@ -112,6 +112,9 @@ export class AgentHub extends EventEmitter {
       key_hash: a.key_hash ?? null,
       telemetry: a.telemetry ?? null,
       software: a.software ?? [],
+      pending_name: a.pending_name ?? null,
+      startup: a.startup ?? null,
+      startup_at: a.startup_at ?? null,
     }));
     this.file.touch();
   }
@@ -310,6 +313,8 @@ export class AgentHub extends EventEmitter {
     const previous = a.agent_version;
     a.agent_version = h.agent_version ?? "";
     a.hostname = h.hostname ?? a.hostname ?? id;
+    // A rename is done once the PC comes back under its new name.
+    if (a.pending_name && a.pending_name.toUpperCase() === String(a.hostname).toUpperCase()) a.pending_name = null;
     a.last_seen = now;
     a.addr = conn.peer;
     a.online = true;
@@ -321,6 +326,7 @@ export class AgentHub extends EventEmitter {
     if (previous && previous !== a.agent_version) this.log(`${a.hostname}: agent ${previous} → ${a.agent_version}`);
     this.changed(a);
     this.emit("online", id);
+    if (!existing) this.emit("enrolled", id);
     conn.send("RequestTelemetry");
     conn.send("RequestSoftware");
     return { id, hostname: a.hostname };

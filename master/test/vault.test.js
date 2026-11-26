@@ -45,8 +45,10 @@ test("sign-in with two-step codes; enabling it signs out other sessions", () => 
     const { secret, uri } = a.beginTotp();
     assert.match(uri, /^otpauth:\/\/totp\/FleetView:admin\?secret=[A-Z2-7]+&issuer=FleetView/);
     assert.throws(() => a.confirmTotp("1.1.1.1", "000000"), /doesn't match/);
-    const tok = a.confirmTotp("1.1.1.1", hotp(secret, counterAt()));
+    const { token: tok, codes } = a.confirmTotp("1.1.1.1", hotp(secret, counterAt()));
     assert.deepEqual(a.session(tok), { user: "admin", mfa: true });
+    assert.equal(codes.length, 10);
+    assert.equal(a.recoveryLeft, 10);
     assert.equal(a.session(before), null, "older sessions are void");
     assert.deepEqual(a.login("1.1.1.1", "admin", "pw-123456789"), { needCode: true }, "password alone is not enough");
     assert.throws(() => a.login("1.1.1.1", "admin", "pw-123456789", "111111"), /wrong or already used/);
@@ -57,6 +59,42 @@ test("sign-in with two-step codes; enabling it signs out other sessions", () => 
     // Persisted: a restarted master still requires the code.
     const b = new Auth({ dataDir: dir, adminUser: "admin", adminPasswordHash: hashPassword("pw-123456789"), sessionHours: 1 }, () => {});
     assert.ok(b.totpEnabled);
+    assert.equal(b.recoveryLeft, 10);
+    assert.ok(!readFileSync(join(dir, "console.secrets.json"), "utf8").includes(codes[0].replace(/-/g, "")), "only hashes are stored");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recovery codes: each signs in once, typed loosely; new ones void the old", () => {
+  const dir = tmp("fv-rec-");
+  try {
+    const a = new Auth({ dataDir: dir, adminUser: "admin", adminPasswordHash: hashPassword("pw-123456789"), sessionHours: 1 }, () => {});
+    const { secret } = a.beginTotp();
+    const { codes } = a.confirmTotp("1.1.1.1", hotp(secret, counterAt()));
+    assert.ok(codes.every((c) => /^[A-Z2-7]{4}(-[A-Z2-7]{4}){3}$/.test(c)), codes.join());
+    assert.equal(new Set(codes).size, 10);
+    const r = a.login("1.1.1.1", "admin", "pw-123456789", codes[0]);
+    assert.deepEqual(a.session(r.token), { user: "admin", mfa: true });
+    assert.equal(r.recovery, true);
+    assert.equal(r.recoveryLeft, 9);
+    assert.throws(() => a.login("1.1.1.1", "admin", "pw-123456789", codes[0]), /wrong or already used/, "once only");
+    // Lower case, spaces instead of dashes, O typed as 0: still accepted.
+    const loose = codes[1].toLowerCase().replace(/-/g, " ").replace(/o/g, "0");
+    assert.equal(a.login("1.1.1.1", "admin", "pw-123456789", loose).recovery, true);
+    assert.throws(() => a.login("1.1.1.1", "admin", "pw-123456789", "AAAA-BBBB-CCCC-DDDD"), /wrong/);
+    // Also accepted where a code confirms a sensitive action.
+    a.stepUp("1.1.1.1", "pw-123456789", codes[2]);
+    assert.equal(a.recoveryLeft, 7);
+    // New codes (password + a code) void the old ones.
+    assert.throws(() => a.regenerateRecovery("1.1.1.1", "wrong", codes[3]), /wrong/);
+    const fresh = a.regenerateRecovery("1.1.1.1", "pw-123456789", codes[3]);
+    assert.equal(a.recoveryLeft, 10);
+    assert.throws(() => a.login("1.1.1.1", "admin", "pw-123456789", codes[4]), /wrong/, "old codes are void");
+    assert.equal(a.login("1.1.1.1", "admin", "pw-123456789", fresh[0]).recovery, true);
+    // Turning 2FA off removes them.
+    a.disableTotp("1.1.1.1", "pw-123456789", fresh[1]);
+    assert.equal(a.recoveryLeft, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -111,7 +149,7 @@ test("password generator", () => {
     assert.match(p, /[a-z]/);
     assert.match(p, /[A-Z]/);
     assert.match(p, /\d/);
-    assert.match(p, /[^\w]/);
+    assert.match(p, /[^A-Za-z0-9]/); // not \W: "_" is one of the symbols
   }
   assert.match(generatePassword({ length: 10, symbols: false }), /^[A-Za-z0-9]{10}$/);
 });

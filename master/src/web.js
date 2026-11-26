@@ -14,6 +14,9 @@ import { writeJsonAtomic } from "./store.js";
 import { compareVersions, withTrailer } from "./agentpkg.js";
 import { handleAgentUpgrade } from "./ws.js";
 import { VaultStore } from "./vault.js";
+import { validateRenames, clampDelay, nameStatusScript, parseNameStatus } from "./rename.js";
+import { listScript as startupListScript, parseList as parseStartup, validateToggle, toggleTitle, fleetSummary } from "./startup.js";
+import { scriptJob, scriptSummary } from "./scripts.js";
 
 const PUBLIC = join(APP_ROOT, "public");
 const TYPES = {
@@ -33,7 +36,7 @@ class HttpError extends Error {
   }
 }
 
-export function startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync }) {
+export function startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync, scripts }) {
   const vault = new VaultStore(config.dataDir);
   const clients = new Set();
   const broadcast = (event, data) => {
@@ -53,13 +56,46 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
   ping.unref();
 
   const audit = (user, what) => logs.write(`[${user}] ${what}`);
+  const scriptList = () => scripts.list().map(scriptSummary);
+
+  /** Run a short read-only script on an online PC and return its result. */
+  async function quickScript(a, script, ms = 90_000) {
+    if (!hub.isOnline(a.agent_id)) throw new HttpError(409, "the PC is offline");
+    const commandId = crypto.randomUUID();
+    const result = jobs.waitResult(a.agent_id, commandId, ms);
+    hub.send(a.agent_id, { RunPowerShell: { command_id: commandId, script } });
+    let r;
+    try {
+      r = await result;
+    } catch (e) {
+      throw new HttpError(504, e.message);
+    }
+    if (!r.success) throw new HttpError(502, (r.stderr || r.stdout || "the script failed on the PC").split(/\r?\n/).find((l) => l.trim()) ?? "failed");
+    return r;
+  }
+
+  /** Read a PC's startup apps and keep them for the fleet view. */
+  async function readStartup(a) {
+    const r = await quickScript(a, startupListScript(), 120_000);
+    let list;
+    try {
+      list = parseStartup(r.stdout);
+    } catch (e) {
+      throw new HttpError(502, e.message);
+    }
+    a.startup = list;
+    a.startup_at = new Date().toISOString();
+    hub.save();
+    hub.changed(a);
+    return list;
+  }
 
   async function api(req, res, url, user, sess, ip) {
     const m = req.method;
     const p = url.pathname;
     const seg = p.split("/").filter(Boolean).slice(1); // after "api"
 
-    if (p === "/api/me" && m === "GET") return json(res, { user, mfa: sess.mfa, totp_enabled: auth.totpEnabled });
+    if (p === "/api/me" && m === "GET") return json(res, { user, mfa: sess.mfa, totp_enabled: auth.totpEnabled, recovery_left: auth.recoveryLeft });
 
     // ---- two-step sign-in (TOTP) ----
     if (p === "/api/2fa/setup" && m === "POST") {
@@ -74,15 +110,26 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
     }
     if (p === "/api/2fa/confirm" && m === "POST") {
       const b = await body(req);
-      let token;
+      let r;
       try {
-        token = auth.confirmTotp(ip, b.code);
+        r = auth.confirmTotp(ip, b.code);
       } catch (e) {
         throw new HttpError(400, e.message);
       }
       audit(user, "turned on two-step sign-in");
-      res.setHeader("Set-Cookie", auth.cookie(token, config.sessionHours * 3600));
-      return json(res, { ok: true });
+      res.setHeader("Set-Cookie", auth.cookie(r.token, config.sessionHours * 3600));
+      return json(res, { ok: true, recovery_codes: r.codes });
+    }
+    if (p === "/api/2fa/recovery" && m === "POST") {
+      const b = await body(req);
+      let codes;
+      try {
+        codes = auth.regenerateRecovery(ip, b.password, b.code);
+      } catch (e) {
+        throw new HttpError(401, e.message);
+      }
+      audit(user, "made new recovery codes (the old ones no longer work)");
+      return json(res, { recovery_codes: codes });
     }
     if (p === "/api/2fa/disable" && m === "POST") {
       const b = await body(req);
@@ -174,6 +221,7 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
         warnings: WARNINGS,
         tasks: taskCatalog(),
         account_actions: ACTIONS,
+        scripts: scriptList(),
         log: logs.recent(),
       });
     }
@@ -216,22 +264,29 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
         return json(res, { ok: hub.isOnline(a.agent_id) });
       }
       if (seg[2] === "accounts" && m === "POST") {
-        if (!hub.isOnline(a.agent_id)) throw new HttpError(409, "the PC is offline");
-        const commandId = crypto.randomUUID();
-        const result = jobs.waitResult(a.agent_id, commandId, 90_000);
-        hub.send(a.agent_id, { RunPowerShell: { command_id: commandId, script: listScript() } });
-        let r;
-        try {
-          r = await result;
-        } catch (e) {
-          throw new HttpError(504, e.message);
-        }
-        if (!r.success) throw new HttpError(502, (r.stderr || r.stdout || "the PC could not list its accounts").split(/\r?\n/)[0]);
+        const r = await quickScript(a, listScript());
         try {
           return json(res, { accounts: parseList(r.stdout), at: new Date().toISOString() });
         } catch (e) {
           throw new HttpError(502, e.message);
         }
+      }
+      if (seg[2] === "startup" && m === "POST") {
+        return json(res, { startup: await readStartup(a), at: a.startup_at });
+      }
+      if (seg[2] === "startup" && m === "GET") {
+        return json(res, { startup: a.startup ?? null, at: a.startup_at ?? null });
+      }
+      if (seg[2] === "name" && m === "POST") {
+        const st = parseNameStatus((await quickScript(a, nameStatusScript(), 60_000)).stdout);
+        // What the PC says wins over what the master remembered.
+        const pending = st.pending && st.pending.toUpperCase() !== String(a.hostname).toUpperCase() ? st.pending : null;
+        if ((a.pending_name ?? null) !== pending) {
+          a.pending_name = pending;
+          hub.save();
+          hub.changed(a);
+        }
+        return json(res, st);
       }
       if (seg[2] === "screenshot" && m === "POST") {
         if (!hub.isOnline(a.agent_id)) throw new HttpError(409, "the PC is offline");
@@ -251,6 +306,66 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
         audit(user, `screenshot of ${a.hostname}`);
         res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "no-store" });
         return res.end(frame.jpeg);
+      }
+    }
+
+    // ---- startup apps across the fleet ----
+    if (p === "/api/startup/fleet" && m === "GET") {
+      return json(res, { ...fleetSummary(hub.list()), pcs: hub.list().length, online: hub.list().filter((a) => a.conn).length });
+    }
+    if (p === "/api/startup/scan" && m === "POST") {
+      const b = await body(req);
+      const ids = (b.targets === undefined ? hub.list().map((a) => a.agent_id) : resolveTargets(b.targets)).filter((id) => hub.isOnline(id));
+      if (!ids.length) throw new HttpError(409, "no online PCs to scan");
+      const errors = [];
+      let next = 0;
+      const worker = async () => {
+        while (next < ids.length) {
+          const a = hub.get(ids[next++]);
+          try {
+            await readStartup(a);
+          } catch (e) {
+            errors.push(`${a.hostname}: ${e.message}`);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(8, ids.length) }, worker));
+      audit(user, `scanned startup apps on ${ids.length} PC(s)`);
+      return json(res, { ...fleetSummary(hub.list()), scanned_now: ids.length - errors.length, errors });
+    }
+
+    // ---- saved scripts ----
+    if (p === "/api/scripts" && m === "GET") return json(res, { scripts: scriptList() });
+    if (p === "/api/scripts" && m === "POST") {
+      let s;
+      try {
+        s = scripts.create(await body(req, 2 * 1048576), user);
+      } catch (e) {
+        throw new HttpError(e.status ?? 400, e.message);
+      }
+      audit(user, `saved script "${s.name}" created${s.auto_new ? " (runs on new PCs)" : ""}`);
+      broadcast("scripts", scriptList());
+      return json(res, { script: scriptSummary(s) });
+    }
+    if (seg[0] === "scripts" && seg[1]) {
+      if (m === "PUT") {
+        let s;
+        try {
+          s = scripts.update(seg[1], await body(req, 2 * 1048576), user);
+        } catch (e) {
+          throw new HttpError(e.status ?? 400, e.message);
+        }
+        if (!s) throw new HttpError(404, "unknown script");
+        audit(user, `saved script "${s.name}" changed${s.auto_new ? " (runs on new PCs)" : ""}`);
+        broadcast("scripts", scriptList());
+        return json(res, { script: scriptSummary(s) });
+      }
+      if (m === "DELETE") {
+        const s = scripts.get(seg[1]);
+        if (!s || !scripts.remove(seg[1])) throw new HttpError(404, "unknown script");
+        audit(user, `saved script "${s.name}" deleted`);
+        broadcast("scripts", scriptList());
+        return json(res, { ok: true });
       }
     }
 
@@ -419,6 +534,46 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
         if (!script.trim()) throw new HttpError(400, "the script is empty");
         return jobs.create({ ...base, kind: "script", title: `PowerShell: ${firstLine(script)}`, detail: script, payload: { script } });
       }
+      case "saved_script": {
+        const s = scripts.get(String(p.script_id ?? ""));
+        if (!s) throw new HttpError(400, "choose a saved script");
+        return jobs.create({ ...base, ...scriptJob(s) });
+      }
+      case "rename": {
+        const names = {};
+        for (const [id, n] of Object.entries(p.names ?? {})) if (ids.includes(id) && hub.get(id)) names[id] = String(n ?? "").trim();
+        try {
+          validateRenames(names);
+        } catch (e) {
+          throw new HttpError(400, e.message);
+        }
+        // Two PCs with one name fight on the network: refuse names in use.
+        for (const [id, n] of Object.entries(names)) {
+          const other = hub.list().find((x) => x.agent_id !== id && !names[x.agent_id] && [x.hostname, x.pending_name].some((v) => String(v ?? "").toUpperCase() === n.toUpperCase()));
+          if (other) throw new HttpError(400, `${n} is already the name of another PC (${other.hostname}${other.pending_name ? `, being renamed to ${other.pending_name}` : ""})`);
+        }
+        const list = Object.entries(names);
+        const restart = !!p.restart;
+        const delay = clampDelay(p.delay_sec);
+        return jobs.create({
+          ...base,
+          agentIds: Object.keys(names),
+          kind: "rename",
+          title: list.length === 1 ? `Rename ${hub.get(list[0][0]).hostname} → ${list[0][1]}` : `Rename ${list.length} PCs${p.pattern ? ` (${String(p.pattern).slice(0, 20)})` : ""}`,
+          detail: list.map(([id, n]) => `${hub.get(id).hostname} → ${n}`).join("\n") + (restart ? `\nrestart ${delay} s after the rename` : "\nno restart: the new name takes effect at the next restart"),
+          payload: { names, restart, delay_sec: delay },
+        });
+      }
+      case "startup": {
+        let t;
+        try {
+          t = validateToggle(p);
+        } catch (e) {
+          throw new HttpError(400, e.message);
+        }
+        const where = t.kind === "task" ? `${t.task_path}${t.name}` : `${t.scope === "user" ? (t.sid ? "one user" : "every signed-in user") : "all users"}: ${t.name}`;
+        return jobs.create({ ...base, kind: "startup", title: toggleTitle(t), detail: where, payload: t });
+      }
       case "uninstall": {
         const name = String(p.name ?? "");
         const uninstall = {};
@@ -521,9 +676,10 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
             throw new HttpError(401, e.message);
           }
           if (r.needCode) return json(res, { need_code: true });
-          logs.write(`[${b.user}] signed in from ${ip}${auth.totpEnabled ? " (with code)" : ""}`);
+          const how = r.recovery ? ` with a RECOVERY CODE (${r.recoveryLeft} left)` : auth.totpEnabled ? " (with code)" : "";
+          logs.write(`[${b.user}] signed in from ${ip}${how}`);
           res.setHeader("Set-Cookie", auth.cookie(r.token, config.sessionHours * 3600));
-          return json(res, { user: b.user });
+          return json(res, { user: b.user, used_recovery: r.recovery, recovery_left: r.recoveryLeft });
         }
         const sess = auth.session(cookies(req).fv_session);
         if (!sess) throw new HttpError(401, "sign in first");
@@ -649,6 +805,9 @@ export function agentSummary(a, pkg) {
     tags: a.tags ?? [],
     notes: a.notes ?? "",
     software_count: (a.software ?? []).length,
+    pending_name: a.pending_name ?? null,
+    startup_count: Array.isArray(a.startup) ? a.startup.length : null,
+    startup_at: a.startup_at ?? null,
     emanagement: a.emanagement ?? null,
   };
 }
@@ -666,5 +825,6 @@ export function jobSummary(j) {
 function jobDetail(j) {
   const s = jobSummary(j);
   for (const [id, t] of Object.entries(j.targets)) s.targets[id].output = t.output ?? "";
+  if (j.kind === "script" && j.payload?.script_id) s.script = j.payload.script;
   return s;
 }

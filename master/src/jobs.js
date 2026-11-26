@@ -25,6 +25,8 @@ import { JsonFile } from "./store.js";
 import { splitArgs, exitMeaning, uninstallScript } from "./installers.js";
 import { taskScript, TASKS } from "./tasks.js";
 import { actionScript, ACTIONS } from "./accounts.js";
+import { renameScript } from "./rename.js";
+import { toggleScript, applyToggle } from "./startup.js";
 
 const CHUNK = 256 * 1024;
 /** Unacknowledged bytes allowed in flight per transfer. */
@@ -93,6 +95,8 @@ export class JobEngine extends EventEmitter {
    *   uninstall { name, uninstall: { [agentId]: uninstallString } }
    *   message   { title, body }
    *   config    { updates: [{ key, value }] }
+   *   rename    { names: { [agentId]: newName }, restart, delay_sec }
+   *   startup   { kind, scope, sid, name, task_path, enable }  (see startup.js)
    */
   create({ kind, title, detail = "", agentIds, payload, waitOffline = false, by = "", secret = null }) {
     const ids = [...new Set(agentIds)].filter((id) => this.hub.get(id));
@@ -499,6 +503,31 @@ export class JobEngine extends EventEmitter {
         ms = COMMAND_RESULT_MS * 2;
         break;
       }
+      case "rename": {
+        const name = job.payload.names?.[agentId];
+        if (!name) return this.finish(job, t, "skipped", "no new name for this PC");
+        let script;
+        try {
+          script = renameScript(name, { restart: job.payload.restart, delaySec: job.payload.delay_sec });
+        } catch (e) {
+          return this.finish(job, t, "failed", e.message);
+        }
+        msg = { RunPowerShell: { command_id: commandId, script } };
+        ms = COMMAND_RESULT_MS * 2;
+        t.message = `renaming to ${name}…`;
+        break;
+      }
+      case "startup": {
+        let script;
+        try {
+          script = toggleScript(job.payload);
+        } catch (e) {
+          return this.finish(job, t, "failed", e.message);
+        }
+        msg = { RunPowerShell: { command_id: commandId, script } };
+        ms = COMMAND_RESULT_MS;
+        break;
+      }
       default:
         return this.finish(job, t, "failed", `unknown job kind ${job.kind}`);
     }
@@ -514,9 +543,26 @@ export class JobEngine extends EventEmitter {
       const r = await result;
       const output = clip([r.stdout, r.stderr && `[stderr]\n${r.stderr}`].filter(Boolean).join("\n"));
       if (job.kind === "uninstall" && r.success) this.hub.send(agentId, "RequestSoftware");
+      if (r.success) this.afterSuccess(job, agentId);
       this.finish(job, t, r.success ? "succeeded" : "failed", summarize(job, r), { exit_code: r.exit_code, output });
     } catch (e) {
       this.finish(job, t, "failed", e.message);
+    }
+  }
+
+  /** Keep what the master knows about the PC in line with what just changed. */
+  afterSuccess(job, agentId) {
+    const a = this.hub.get(agentId);
+    if (!a) return;
+    if (job.kind === "rename") {
+      const name = job.payload.names?.[agentId];
+      // Until the PC restarts and reconnects under its new name.
+      a.pending_name = name && name.toUpperCase() !== String(a.hostname).toUpperCase() ? name : null;
+      this.hub.save();
+      this.hub.changed(a);
+    } else if (job.kind === "startup" && applyToggle(a.startup, job.payload)) {
+      this.hub.save();
+      this.hub.changed(a);
     }
   }
 
@@ -534,7 +580,8 @@ function summarize(job, r) {
   // PowerShell errors: the message is the first line; "At C:\..." etc. follow.
   const err = lines(r.stderr).find((l) => !/^(At |\+ |CategoryInfo|FullyQualifiedErrorId)/.test(l)) ?? "";
   const last = out[out.length - 1] ?? "";
-  if (r.success) return (job.kind === "script" ? "done" : last || "done").slice(0, 300);
+  // Ad-hoc scripts print anything; saved scripts and tasks end with a summary.
+  if (r.success) return (job.kind === "script" && !job.payload?.script_id ? "done" : last || "done").slice(0, 300);
   if (job.kind === "task") {
     const meaning = TASKS[job.payload.task]?.failMeaning;
     if (r.exit_code === 1 && meaning) return meaning;

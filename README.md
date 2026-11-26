@@ -17,7 +17,7 @@ Push silent installers to one PC, a few, or all of them, and see each PC's resul
 ![License](https://img.shields.io/badge/license-source--available-5c6270?style=flat-square)
 
 [Master setup](#-master-setup) · [Deploy at fleetview.akulav.com](#-deploy-at-fleetviewakulavcom) ·
-[Push software](#-pushing-software) · [Testing](#-testing) · [Security](docs/SECURITY.md) · [Architecture](docs/ARCHITECTURE.md)
+[Push software](#-pushing-software) · [Manage PCs](#-managing-pcs) · [Testing](#-testing) · [Security](docs/SECURITY.md) · [Architecture](docs/ARCHITECTURE.md)
 
 </div>
 
@@ -49,6 +49,14 @@ Push silent installers to one PC, a few, or all of them, and see each PC's resul
   create, delete. The same action can go to many PCs at once, e.g. set
   `itadmin`'s password everywhere. Passwords are never stored, and a PC's last
   administrator is never removed.
+- **Rename PCs** from a PC's page, or many at once with a pattern (`PC-###` →
+  PC-001, PC-002…). See [Managing PCs](#-managing-pcs).
+- **Startup apps** per PC (Run keys, Startup folders, logon/boot tasks), with
+  disable/enable like Task Manager, and a fleet view of which entries are on
+  how many PCs.
+- **Saved scripts**: a library of PowerShell scripts (it starts with a
+  conservative *debloat* example) to run on one PC, a selection or the whole
+  fleet, or automatically once on every new PC.
 - PowerShell as SYSTEM, messages to the logged-in user, screenshots (the user is
   notified), uninstall from a PC's program list, agent updates, and a remote
   change of the agent's master address.
@@ -79,7 +87,12 @@ Restore an encrypted backup or delete the vault and start over.
 **Who can reach it.** The Passwords tab only works for sessions confirmed with
 **two-step sign-in** (Settings → Security: a TOTP code from Microsoft/Google
 Authenticator, Aegis, 1Password…). Turning 2FA on or off signs out every other
-session. Sign-in failures (password or code) lock the address out for 10 minutes
+session. Turning it on also gives **10 recovery codes** (shown once: copy,
+download or print them). Each one replaces an authenticator code once, at sign-in
+("Lost your phone? Use a recovery code") or to confirm a sensitive action; only
+their SHA-256 is stored, every use is logged with the number left, and *Make new
+recovery codes* (password + code) voids the old set. Without codes or phone, delete
+`totp_secret` from `console.secrets.json` in the data folder and restart. Sign-in failures (password or code) lock the address out for 10 minutes
 after 8 tries. The session cookie is `HttpOnly`, `SameSite=Strict` and `Secure`
 on HTTPS. Every change needs a custom header (CSRF guard). The pages run under a
 strict Content-Security-Policy (`script-src 'self'`, no inline code, no third-party
@@ -288,6 +301,63 @@ had just been uninstalled, was marked *Skipped — already installed*, and the
 file was never sent. The same command run by hand worked because nothing was
 skipped. Now skipping is opt-in and uses a fresh list, and every PC's result
 says exactly what happened.
+
+## 🧰 Managing PCs
+
+Everything here runs as PowerShell as SYSTEM through the agent (no agent update
+needed) and shows a result per PC in **Activity**.
+
+### Rename
+
+**Rename** on a PC's page, or tick PCs → **Rename** for a pattern: `#`s become a
+zero-padded number (`PC-###` from 1 → PC-001, PC-002…), PCs are numbered in name
+order and the preview shows every new name. Names follow the Windows (NetBIOS)
+rules: at most 15 characters, letters, digits and hyphens, not only digits, no
+hyphen at either end. Names already used by another PC are refused.
+
+A new name only takes effect after a restart. Without **Restart after
+renaming**, the PC shows *→ NEW-NAME · restart pending* until it reconnects
+under the new name; with it, the signed-in user gets a warning and the PC
+restarts after the delay you choose. Opening Rename on an online PC first reads
+its name, so a rename that is already pending is shown. Domain-joined PCs can
+only be renamed this way if the PC may rename its own AD computer account.
+
+### Startup apps
+
+A PC's **Startup** tab lists what starts with Windows:
+
+| Source | Where |
+|---|---|
+| Registry Run / RunOnce | `HKLM`, `HKLM\SOFTWARE\WOW6432Node` and every user hive loaded under `HKU` |
+| Startup folders | the common one and every user profile's |
+| Scheduled tasks | tasks with a logon or boot trigger (Windows' own tasks are hidden unless ticked) |
+
+**Disable / Enable** works like Task Manager: the entry stays and Windows skips
+it, through the `StartupApproved` values (`...\Explorer\StartupApproved\Run`,
+`Run32`, `StartupFolder`); tasks are disabled with `Disable-ScheduledTask`.
+RunOnce entries can't be disabled. Users who are signed out are not loaded, so
+their Run entries are not listed and their Startup-folder items show *unknown*.
+
+The **Startup** tab at the top scans every online PC and shows each entry with
+the number of PCs that have it and how many have it enabled; click one for the
+PCs, or **Disable on all**.
+
+### Saved scripts
+
+The **Scripts** tab keeps named PowerShell scripts on the master
+(`scripts.json`): create, edit, delete, and **Run…** on one PC, the selected PCs,
+all online PCs or all PCs (offline ones run it when they connect). The last line
+a script prints is the result shown in Activity; a non-zero exit marks the PC
+as failed. A job keeps a copy of the text it ran, so later edits don't change
+the history. **Run automatically on new PCs** runs a script once on every PC
+that enrolls afterwards (about a minute after it first connects).
+
+The library starts with **Debloat Windows 10/11 (example)**, meant to be
+edited: it removes consumer AppX apps (news, weather, solitaire, Candy Crush…)
+for all users and from the image, turns off consumer features, tips and
+suggested apps (also for new users), and sets telemetry to the minimum the
+edition allows. It never touches the Store, winget, Defender, Windows Update,
+Edge or app frameworks.
 
 ## 🧪 Testing
 

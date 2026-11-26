@@ -14,6 +14,7 @@ import { Auth } from "./auth.js";
 import { Logs } from "./logs.js";
 import { startWeb } from "./web.js";
 import { ConfigSync } from "./configsync.js";
+import { ScriptLibrary, runAutoScripts } from "./scripts.js";
 
 export async function startMaster(overrides = {}, { quiet = false } = {}) {
   const config = { ...loadConfig(), ...overrides };
@@ -39,7 +40,13 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
   const jobs = new JobEngine({ config, hub, library, pkg, log });
   const auth = new Auth(config, log);
   const configSync = new ConfigSync({ config, hub, jobs, log });
-  const web = await startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync });
+  const scripts = new ScriptLibrary(config.dataDir);
+  // Scripts marked "run on new PCs". A short wait first: a new agent may
+  // restart once to pick up the master's settings (see configsync.js), and a
+  // job created while it is away simply waits for it.
+  const autoDelay = config.autoScriptDelayMs ?? 60_000;
+  hub.on("enrolled", (agentId) => setTimeout(() => runAutoScripts({ scripts, jobs, agentId, log }), autoDelay).unref?.());
+  const web = await startWeb({ config, hub, jobs, library, pkg, builder, auth, identity, logs, configSync, scripts });
   // A prebuilt exe (FLEETVIEW_AGENT_EXE) takes the place of building.
   if (config.agentBuild && !pkg.envPath) builder.ensure();
   log(`${identity.masterName} ready — certificate ${identity.fingerprint.slice(0, 16)}…`);
@@ -49,6 +56,7 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
     hub,
     jobs,
     configSync,
+    scripts,
     library,
     pkg,
     builder,
@@ -61,6 +69,7 @@ export async function startMaster(overrides = {}, { quiet = false } = {}) {
       configSync.close();
       discovery?.close();
       jobs.close();
+      scripts.close();
       hub.close();
     },
   };

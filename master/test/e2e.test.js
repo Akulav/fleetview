@@ -275,3 +275,64 @@ test("the master keeps every agent's e-Management URL in sync", { skip }, async 
   startAgent();
   await until("the URL to be restored on connect", () => agentCfg().emanagement_url === "https://documente.example.md", 60_000);
 });
+
+// ---- PC management (rename, startup apps, saved scripts) ----
+// Nothing here changes this PC: the rename is to its current name (a no-op),
+// and the startup toggle uses a throwaway HKCU Run value that is removed after.
+
+test("reads the PC's name and a rename to the same name changes nothing", { skip }, async () => {
+  const { data: st } = await call("POST", `/api/agents/${agentId}/name`);
+  assert.equal(st.active.toUpperCase(), process.env.COMPUTERNAME.toUpperCase());
+  if (st.pending) return; // a real rename is pending on this PC: don't touch it
+  const { data } = await call("POST", "/api/jobs", { kind: "rename", targets: [agentId], payload: { names: { [agentId]: st.active } } });
+  const t = await finished(data.job.id);
+  assert.equal(t.state, "succeeded", `${t.message}\n${t.output}`);
+  assert.match(t.message, /Already named/);
+});
+
+test("startup apps: listed, disabled and enabled like Task Manager", { skip }, async () => {
+  const run = String.raw`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`;
+  const approved = String.raw`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run`;
+  const name = "FleetViewE2E";
+  const firstByte = () => {
+    const out = execFileSync("reg.exe", ["query", approved, "/v", name], { encoding: "utf8" });
+    return out.match(/REG_BINARY\s+([0-9A-F]{2})/i)[1];
+  };
+  execFileSync("reg.exe", ["add", run, "/v", name, "/d", "cmd.exe /c exit", "/f"], { stdio: "ignore" });
+  try {
+    const list = async () => (await call("POST", `/api/agents/${agentId}/startup`)).data.startup.find((e) => e.name === name);
+    const e = await list();
+    assert.ok(e, "the HKCU Run value is listed");
+    assert.equal(e.kind, "run");
+    assert.equal(e.scope, "user");
+    assert.equal(e.enabled, true);
+    assert.ok(e.can_toggle);
+    const toggle = async (enable) => {
+      const { data } = await call("POST", "/api/jobs", { kind: "startup", targets: [agentId], payload: { kind: e.kind, scope: e.scope, sid: e.sid, name, enable } });
+      const t = await finished(data.job.id);
+      assert.equal(t.state, "succeeded", `${t.message}\n${t.output}`);
+    };
+    await toggle(false);
+    assert.equal(firstByte(), "03");
+    assert.equal((await list()).enabled, false);
+    await toggle(true);
+    assert.equal(firstByte(), "02");
+    assert.equal((await list()).enabled, true);
+    const fleet = (await call("GET", "/api/startup/fleet")).data;
+    assert.equal(fleet.entries.find((x) => x.name === name)?.count, 1);
+  } finally {
+    execFileSync("reg.exe", ["delete", run, "/v", name, "/f"], { stdio: "ignore" });
+    try {
+      execFileSync("reg.exe", ["delete", approved, "/v", name, "/f"], { stdio: "ignore" });
+    } catch {}
+  }
+});
+
+test("a saved script runs and reports its last line", { skip }, async () => {
+  const { data: s } = await call("POST", "/api/scripts", { name: "e2e hello", script: "'line one'\n'diacritics: ăîșțâ'\n'hello from ' + $env:COMPUTERNAME" });
+  const { data } = await call("POST", "/api/jobs", { kind: "saved_script", targets: [agentId], payload: { script_id: s.script.id } });
+  const t = await finished(data.job.id);
+  assert.equal(t.state, "succeeded", `${t.message}\n${t.output}`);
+  assert.equal(t.message, `hello from ${process.env.COMPUTERNAME}`);
+  assert.match(t.output, /ăîșțâ/, "the agent's BOM keeps non-ASCII in user scripts intact");
+});

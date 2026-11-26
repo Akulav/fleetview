@@ -18,6 +18,28 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   written here (no third-party code) and tested against Node's own implementations and a real KeePassXC file.
 - **Two-step sign-in (TOTP)** in Settings → Security with a QR code; required for the vault. Codes work once;
   turning 2FA on or off signs out other sessions; failures count toward the sign-in lockout.
+- **Recovery codes:** turning on 2FA gives 10 one-time codes (copy / download / print) that replace an
+  authenticator code at sign-in or for sensitive actions. Stored as hashes, each use logged with the count left,
+  a new set (password + code) voids the old one.
+
+### Added — PC management
+- **Rename PCs** from a PC's page or in bulk from the selection bar with a pattern (`PC-###` → PC-001, PC-002…),
+  with a live preview and the NetBIOS rules checked as you type (15 characters, letters/digits/hyphens, not
+  all digits, no leading/trailing hyphen; names in use are refused). Runs `Rename-Computer -Force` as SYSTEM, with
+  an optional restart after a warning. PCs show *restart pending* until they come back under the new name, and a
+  rename already pending on the PC is detected.
+- **Startup apps** tab on each PC: Run/RunOnce keys (HKLM, WOW6432Node, every loaded user hive), the common and
+  per-user Startup folders, and logon/boot scheduled tasks, with source, command and state. **Disable/Enable**
+  the way Task Manager does (`StartupApproved` values; `Disable-ScheduledTask` for tasks).
+- **Startup** page: scans the online PCs and shows which startup entries are on how many PCs and how many have
+  them enabled, with "disable on all".
+- **Scripts** page: a library of saved PowerShell scripts (create, edit, delete) to run on one PC, the selection,
+  all online or all PCs (offline ones when they connect), with each PC's result (the script's last line) in
+  Activity. A script can run **automatically once on every new PC**. Starts with a commented, conservative
+  Windows 10/11 debloat example (consumer apps, consumer features and suggestions, telemetry to the minimum;
+  never the Store, Defender, Windows Update or Edge).
+- Tests: unit and API tests for all of the above (`test/manage.test.js`, including a PowerShell syntax check of
+  every generated script) and end-to-end tests with the real agent.
 
 ### Fixed
 - New agent installers had no `emanagement_url` (so no MoldSign bridge) after moving from the desktop master:

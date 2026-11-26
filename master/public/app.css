@@ -354,3 +354,16 @@ details > summary { cursor: pointer; }
   .tabs { order: 10; width: 100%; overflow-x: auto; }
   .topbar .btn { padding: 6px 10px; font-size: 13px; }
 }
+.recovery-codes { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 16px; margin-top: 12px; padding: 14px 16px; background: var(--surface-2); border-radius: 10px; font-size: 14px; letter-spacing: 0.03em; }
+@media print { body * { visibility: hidden; } .recovery-codes, .recovery-codes * { visibility: visible; } .recovery-codes { position: absolute; inset: 0 auto auto 0; background: none; color: #000; } }
+/* Scripts and startup apps */
+.startup-cmd { font-size: 12px; word-break: break-all; white-space: normal; }
+.startup-table tbody tr { cursor: pointer; }
+.startup-table td { vertical-align: top; }
+.startup-pcs td { background: var(--surface-2); }
+.pcs-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.startup-pcs .chip { display: inline-flex; align-items: center; gap: 4px; }
+.script-edit { min-height: 340px; font-size: 13px; line-height: 1.45; tab-size: 2; white-space: pre; overflow: auto; }
+.script-view { white-space: pre-wrap; background: var(--surface-2); padding: 10px; border-radius: 8px; max-height: 360px; overflow: auto; font-size: 12px; }
+.script-row .btn { flex-shrink: 0; }
+.script-list .sw:first-child { border-top: 0; }
