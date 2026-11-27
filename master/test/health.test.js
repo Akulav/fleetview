@@ -10,6 +10,7 @@ import { TASKS, taskScript, cleanOptions } from "../src/tasks.js";
 import { baselineScript, adblockScript, ADBLOCK, ASR_RULES } from "../src/hardening.js";
 import { Metrics, parseRecord, cleanSnapshot, cleanSpeed, speedScript } from "../src/metrics.js";
 import { listScript as accountsScript } from "../src/accounts.js";
+import { uninstallScript } from "../src/installers.js";
 import { startMaster } from "../src/master.js";
 
 const tmp = (p) => mkdtempSync(join(tmpdir(), p));
@@ -23,7 +24,9 @@ test("every task script is ASCII and valid PowerShell 5.1", { skip: !hasPs && "n
   for (const asr of ["off", "audit", "standard", "block"]) scripts[`baseline_${asr}`] = baselineScript({ asr, controlled_folders: asr === "block" });
   scripts.adblock_remove2 = adblockScript({ remove: true });
   scripts.accounts = accountsScript();
-  for (const [k, s] of Object.entries(scripts)) assert.ok(isAscii(s.replace(/^# FleetView task: .*\n/, "")), `${k} is not ASCII`);
+  scripts.uninstall = uninstallScript('"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe" --uninstall', "AnyDesk");
+  scripts.uninstall_msi = uninstallScript("MsiExec.exe /X{12345678-ABCD-1234-ABCD-1234567890AB}", "Some App");
+  for (const [k, s] of Object.entries(scripts)) assert.ok(isAscii(s.replace(/^# FleetView (task|: uninstall) ?.*\n/, "")), `${k} is not ASCII`);
   const dir = tmp("fv-ps2-");
   try {
     const files = Object.entries(scripts).map(([k, s]) => {

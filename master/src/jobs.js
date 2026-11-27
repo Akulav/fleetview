@@ -472,8 +472,8 @@ export class JobEngine extends EventEmitter {
       case "uninstall": {
         const u = job.payload.uninstall?.[agentId];
         if (!u) return this.finish(job, t, "skipped", "not installed on this PC");
-        msg = { RunPowerShell: { command_id: commandId, script: uninstallScript(u) } };
-        ms = SCRIPT_RESULT_MS;
+        msg = { RunPowerShell: { command_id: commandId, script: uninstallScript(u, job.payload.name) } };
+        ms = 30 * 60_000; // the script stops the uninstaller after 15 min
         t.message = "uninstalling…";
         break;
       }

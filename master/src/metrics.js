@@ -177,41 +177,69 @@ const round1 = (x) => Math.round(x * 10) / 10;
 // non-English Windows, the class names are not.
 
 export function perfScript() {
+  // Every measurement is on its own: a PC where one of them is unavailable
+  // (broken performance counters, a WMI hiccup, an unreadable event log)
+  // still gets the rest, and the output says what could not be read.
   return String.raw`[Console]::OutputEncoding = [Text.Encoding]::UTF8
-$ErrorActionPreference = 'Stop'
-$cpu = @()
+$ErrorActionPreference = 'Continue'
+$missing = New-Object System.Collections.Generic.List[string]
+function Try-Get($what, [scriptblock]$sb) {
+  try { & $sb } catch { $script:missing.Add($what + ': ' + $_.Exception.Message.Trim()); $null }
+}
+# CPU over 30 s. The performance class first; Win32_Processor's load as the
+# fallback (on PCs whose performance counters are broken or disabled).
+$cpu = New-Object System.Collections.Generic.List[double]
+$cpuSource = 'counters'
 for ($i = 0; $i -lt 15; $i++) {
-  $cpu += [double](Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
+  $v = Try-Get 'cpu' { [double](Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop).PercentProcessorTime }
+  if ($null -eq $v) {
+    $cpuSource = 'processor load'
+    $v = Try-Get 'cpu load' { [double](@(Get-CimInstance Win32_Processor -ErrorAction Stop | Measure-Object LoadPercentage -Average)[0].Average) }
+  }
+  if ($null -ne $v) { $cpu.Add($v) }
   Start-Sleep -Seconds 2
 }
-$os = Get-CimInstance Win32_OperatingSystem
-$pm = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
-$totalMb = [Math]::Round($os.TotalVisibleMemorySize / 1KB)
-$usedMb = [Math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1KB)
-$procs = @(Get-Process)
-$top = @($procs | Group-Object ProcessName | ForEach-Object { [pscustomobject]@{ name = $_.Name; mb = [Math]::Round(($_.Group | Measure-Object WorkingSet64 -Sum).Sum / 1MB) } } | Sort-Object mb -Descending | Select-Object -First 6)
+$os = Try-Get 'memory' { Get-CimInstance Win32_OperatingSystem -ErrorAction Stop }
+$pm = Try-Get 'commit' { Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory -ErrorAction Stop }
+$totalMb = $null; $usedMb = $null
+if ($os) {
+  $totalMb = [Math]::Round([double]$os.TotalVisibleMemorySize / 1KB)
+  $usedMb = [Math]::Round(([double]$os.TotalVisibleMemorySize - [double]$os.FreePhysicalMemory) / 1KB)
+}
+$procs = @(Try-Get 'processes' { Get-Process -ErrorAction Stop })
+$top = @(Try-Get 'top programs' {
+  $procs | Group-Object ProcessName | ForEach-Object { [pscustomobject]@{ name = [string]$_.Name; mb = [Math]::Round([double]($_.Group | Measure-Object WorkingSet64 -Sum).Sum / 1MB) } } |
+    Sort-Object mb -Descending | Select-Object -First 6
+})
 $boot = $null; $bootAt = $null
 try {
   $e = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Diagnostics-Performance/Operational'; Id = 100 } -MaxEvents 1 -ErrorAction Stop
   $d = @{}; foreach ($x in ([xml]$e.ToXml()).Event.EventData.Data) { $d[$x.Name] = $x.'#text' }
   $boot = [int]$d['BootTime']; $bootAt = $e.TimeCreated.ToUniversalTime().ToString('o')
 } catch {}
-$sys = Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':'))
+$freeGb = Try-Get 'disk' { [Math]::Round([double](Get-CimInstance Win32_LogicalDisk -Filter ("DeviceID='" + $env:SystemDrive + "'") -ErrorAction Stop).FreeSpace / 1GB, 1) }
+$uptime = $null; if ($os -and $os.LastBootUpTime) { $uptime = [Math]::Round(((Get-Date) - $os.LastBootUpTime).TotalHours, 1) }
+$cpuAvg = $null; $cpuMax = $null
+if ($cpu.Count) { $cpuAvg = [Math]::Round(($cpu | Measure-Object -Average).Average, 1); $cpuMax = [Math]::Round(($cpu | Measure-Object -Maximum).Maximum, 1) }
 $snap = [ordered]@{
-  cpu_avg = [Math]::Round(($cpu | Measure-Object -Average).Average, 1)
-  cpu_max = [Math]::Round(($cpu | Measure-Object -Maximum).Maximum, 1)
+  cpu_avg = $cpuAvg; cpu_max = $cpuMax; cpu_source = $cpuSource
   mem_total_mb = $totalMb; mem_used_mb = $usedMb
-  mem_pct = [Math]::Round($usedMb / [Math]::Max(1, $totalMb) * 100, 1)
-  commit_mb = [Math]::Round($pm.CommittedBytes / 1MB); commit_limit_mb = [Math]::Round($pm.CommitLimit / 1MB)
-  processes = $procs.Count
-  boot_ms = $boot; boot_at = $bootAt
-  uptime_h = [Math]::Round(((Get-Date) - $os.LastBootUpTime).TotalHours, 1)
-  disk_free_gb = [Math]::Round($sys.Free / 1GB, 1)
+  mem_pct = $(if ($totalMb) { [Math]::Round($usedMb / $totalMb * 100, 1) } else { $null })
+  commit_mb = $(if ($pm) { [Math]::Round([double]$pm.CommittedBytes / 1MB) } else { $null })
+  commit_limit_mb = $(if ($pm) { [Math]::Round([double]$pm.CommitLimit / 1MB) } else { $null })
+  processes = $(if ($procs.Count) { $procs.Count } else { $null })
+  boot_ms = $boot; boot_at = $bootAt; uptime_h = $uptime; disk_free_gb = $freeGb
   top = $top
 }
 'FVPERF ' + (ConvertTo-Json -InputObject $snap -Compress -Depth 3)
-'Top programs by memory: ' + (($top | ForEach-Object { $_.name + ' ' + $_.mb + ' MB' }) -join ', ')
-'CPU ' + $snap.cpu_avg + '% (30 s average, peak ' + $snap.cpu_max + '%), memory ' + $snap.mem_pct + '% (' + [Math]::Round($usedMb / 1KB, 1) + ' of ' + [Math]::Round($totalMb / 1KB, 1) + ' GB), ' + $procs.Count + ' processes' + $(if ($boot) { ', last boot ' + [Math]::Round($boot / 1000) + ' s' } else { '' })`;
+if ($top.Count) { 'Top programs by memory: ' + (($top | ForEach-Object { $_.name + ' ' + $_.mb + ' MB' }) -join ', ') }
+foreach ($m in $missing | Select-Object -Unique) { 'Could not read ' + $m }
+if ($null -eq $cpuAvg -and -not $totalMb) { 'No measurement worked on this PC (see above).'; exit 1 }
+$(if ($null -ne $cpuAvg) { 'CPU ' + $cpuAvg + '% (30 s average, peak ' + $cpuMax + '%' + $(if ($cpuSource -ne 'counters') { ', from ' + $cpuSource } else { '' }) + ')' } else { 'CPU: not readable' }) +
+  $(if ($totalMb) { ', memory ' + $snap.mem_pct + '% (' + [Math]::Round($usedMb / 1KB, 1) + ' of ' + [Math]::Round($totalMb / 1KB, 1) + ' GB)' } else { '' }) +
+  $(if ($procs.Count) { ', ' + $procs.Count + ' processes' } else { '' }) +
+  $(if ($boot) { ', last boot ' + [Math]::Round($boot / 1000) + ' s' } else { '' })
+exit 0`;
 }
 
 /** Internet speed against Cloudflare's speed test endpoints (no account, no

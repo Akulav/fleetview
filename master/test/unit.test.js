@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as mp from "../src/msgpack.js";
-import { detectKind, splitArgs, uninstallScript, safeFileName, splitCommand } from "../src/installers.js";
+import { detectKind, splitArgs, uninstallScript, silentCommand, safeFileName, splitCommand } from "../src/installers.js";
 import { findAgentVersion, withTrailer, splitTrailer, compareVersions } from "../src/agentpkg.js";
 import { loadOrCreateIdentity, agentConfigJson } from "../src/identity.js";
 import { signingBytes, buildBeacon, datagram, parseDatagram } from "../src/discovery.js";
@@ -80,11 +80,21 @@ test("argument splitting keeps quoted values together", () => {
 });
 
 test("uninstall scripts", () => {
-  const s = uninstallScript("MsiExec.exe /I{12345678-ABCD-1234-ABCD-1234567890AB}");
-  assert.match(s, /'msiexec.exe' -ArgumentList '\/X \{12345678-ABCD-1234-ABCD-1234567890AB\} \/qn \/norestart'/);
+  const s = uninstallScript("MsiExec.exe /I{12345678-ABCD-1234-ABCD-1234567890AB}", "Some App");
+  assert.match(s, /\$file = 'msiexec.exe'\n\$argv = '\/X \{12345678-ABCD-1234-ABCD-1234567890AB\} \/qn \/norestart'/);
+  assert.match(s, /\$name = 'Some App'/);
   const inno = uninstallScript('"C:\\Program Files\\O\'Brien\\unins000.exe"');
   assert.match(inno, /'C:\\Program Files\\O''Brien\\unins000.exe'/);
   assert.match(inno, /VERYSILENT/);
+  // AnyDesk's --uninstall waits for a click; its silent removal is --silent --remove.
+  assert.deepEqual(silentCommand('"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe" --uninstall'), { file: "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe", args: "--silent --remove" });
+  assert.match(silentCommand('"C:\\Program Files\\Google\\Chrome\\Application\\120.0\\Installer\\setup.exe" --uninstall --system-level').args, /--force-uninstall$/);
+  assert.equal(silentCommand('"C:\\x\\uninst.exe" /S').args, "/S");
+  const any = uninstallScript('"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe" --uninstall', "AnyDesk", { timeoutMin: 10 });
+  assert.match(any, /WaitForExit\(10 \* 60000\)/, "a hung uninstaller is stopped");
+  assert.match(any, /taskkill\.exe \/T \/F/);
+  assert.match(any, /QuietUninstallString/, "the program's own quiet command wins");
+  assert.match(any, /is still installed/, "checked afterwards");
   assert.deepEqual(splitCommand("C:\\Prog Files\\x.exe /a"), ["C:\\Prog Files\\x.exe", "/a"]);
   assert.equal(safeFileName("..\\..\\evil?.exe"), "evil_.exe");
 });

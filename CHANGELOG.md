@@ -81,6 +81,15 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
 - The Computers list shows the last internet speed and a *cleaned* badge.
 
 ### Fixed
+- **Uninstalls that hung forever (e.g. AnyDesk):** an uninstaller that asks for a click waited invisibly as
+  SYSTEM until the agent's 4-hour limit. Uninstalls now use the program's own MSI product code or
+  QuietUninstallString when it has one, know AnyDesk (`--silent --remove`) and Chromium browsers
+  (`--force-uninstall`), stop an uninstaller still running after 15 minutes, and check afterwards that the
+  program is really gone (many uninstallers return before they finish). NSIS `uninst.exe` no longer gets Inno
+  Setup switches.
+- **Performance snapshots failed** on PCs where one measurement wasn't readable: each part is now measured on its
+  own (CPU falls back to the processor load when the performance counters are broken), and the output says
+  what couldn't be read.
 - **Check / Install Windows updates failed with "The service cannot be started, either because it is disabled…"**
   (0x80070422) on PCs where a debloat tool had disabled the update services: they are re-enabled (manual start,
   as Windows ships them) before searching, and common error codes are explained.
