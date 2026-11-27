@@ -78,6 +78,18 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   baseline, adblocker, Windows Update check/install/repair, clean-up, snapshot and speed test, screenshot,
   message, PowerShell, saved scripts, restart/shut down/cancel, agent version/update/settings/refresh, and
   removing it from the list.
+- **Clean checklist, and automatic "cleaned":** a PC is marked cleaned by itself (by *auto*) the moment all of
+  these hold: security baseline applied, a security check done, adblocker installed (and not removed since),
+  Windows Update repaired, checked and installed, the clean-up run, and exactly two accounts besides Windows'
+  own, one of them named *Admin*. The checklist (x/8, green ✓ per item, what's missing) is on the PC's
+  Overview and Maintenance tabs and in the Cleaning page; **Run what's missing** opens Apply changes with
+  exactly the missing tasks, for one PC or many. A mark set by hand is never removed.
+- Each PC keeps its last result per task (and its last account list) on the master, so statuses survive the
+  Activity history being trimmed; they are filled from the existing history on the first start.
+- New **Read local accounts** task (for batches and the checklist). *New PC setup* now runs everything the
+  checklist needs.
+- **Check for Windows updates** no longer reports "updates waiting" as a failure: the check worked; the result
+  says how many are waiting.
 - **Cleaning** page (sidebar): every PC cleaned or not, with when, who and the note, CPU / memory before → after
   and boot time before → after per PC and on average; filters, tick PCs to *Clean up…* (snapshot, debloat, temp
   files, mark) or *Mark cleaned*. The Computers list has a *Cleaned* filter next to *Not cleaned*.
@@ -94,7 +106,9 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   Computers list has a **⋯** menu with the usual tasks (updates, security check, speed test, snapshot,
   clean-up), Maintenance, Apply, Install, Restart and Open.
 - **Reload** button on a PC's Programs tab.
-- A failed Chromium-style uninstall (Copilot, Edge…) shows the end of the installer's own log.
+- A failed Chromium-style uninstall (Copilot, Edge…) shows the end of the installer's own log, and when the
+  first attempt fails it closes the app's running processes, allows the uninstall for that one attempt
+  (`EdgeUpdateDev\AllowUninstall`, removed again afterwards) and tries once more.
 - **Maintenance tab** on each PC's page: every task by group with how it last went on that PC — green when done
   (security baseline applied, adblocker installed, updates checked…), amber when it found something (protection
   off, updates waiting), red when it failed — with Run / Run again and Details. "x of y done on this PC" at the

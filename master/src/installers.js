@@ -290,22 +290,43 @@ if ($chromium) {
   $argv = ($argv -replace '(^|\s)/S(?=\s|$)', ' ').Trim()
   if ($argv -notmatch '--force-uninstall') { $argv += ' --force-uninstall' }
 }
-'Running: ' + $file + ' ' + $argv
-$sp = @{ FilePath = $file; PassThru = $true; WindowStyle = 'Hidden' }
-if ($argv) { $sp.ArgumentList = $argv }
-$started = Get-Date
-$p = Start-Process @sp
-$h = $p.Handle # keeps the exit code readable after the process ends
-if (-not $p.WaitForExit(@MINS@ * 60000)) {
-  & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
-  'Stopped after @MINS@ min: the uninstaller was still running - it is probably waiting for a click (it has no silent mode). Uninstall it by hand once, or use a saved script with its silent switch.'
-  exit 1460
+function Invoke-Uninstaller {
+  'Running: ' + $file + ' ' + $argv
+  $sp = @{ FilePath = $file; PassThru = $true; WindowStyle = 'Hidden' }
+  if ($argv) { $sp.ArgumentList = $argv }
+  $p = Start-Process @sp
+  $h = $p.Handle # keeps the exit code readable after the process ends
+  if (-not $p.WaitForExit(@MINS@ * 60000)) {
+    & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
+    'Stopped after @MINS@ min: the uninstaller was still running - it is probably waiting for a click (it has no silent mode). Uninstall it by hand once, or use a saved script with its silent switch.'
+    exit 1460
+  }
+  $c = $p.ExitCode
+  $script:code = $(if ($null -eq $c) { 0 } else { $c })
 }
-$code = $p.ExitCode
-if ($null -eq $code) { $code = 0 }
+$started = Get-Date
+$code = 0
+Invoke-Uninstaller
 $ok = @(0, 1641, 3010)
 # Chromium-style installers report a finished uninstall as 19.
 if ($chromium) { $ok += 19 }
+if ($chromium -and $code -notin $ok) {
+  # Microsoft's Edge-family apps (Edge, Copilot) refuse while the app runs for a
+  # signed-in user, or unless uninstalling is allowed (EdgeUpdateDev\AllowUninstall).
+  # Close the app, allow it for this one attempt, try again.
+  'First attempt failed (exit ' + $code + '): closing the program and allowing the uninstall, then trying again...'
+  $root = $file -replace '\\Application\\.*$', ''
+  $procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase) })
+  foreach ($x in $procs) { try { Stop-Process -Id $x.Id -Force -ErrorAction Stop } catch {} }
+  if ($procs.Count) { 'Closed ' + $procs.Count + ' running process(es) of it.' }
+  $devPath = 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev'
+  $hk = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')
+  $dev = $hk.CreateSubKey($devPath)
+  $had = $null -ne $dev.GetValue('AllowUninstall')
+  $dev.SetValue('AllowUninstall', 1, 'DWord')
+  try { Invoke-Uninstaller }
+  finally { if (-not $had) { try { $dev.DeleteValue('AllowUninstall') } catch {} }; $dev.Close() }
+}
 if ($code -notin $ok) {
   if ($chromium) {
     # These installers say why in their own log (--verbose-logging): show its end.

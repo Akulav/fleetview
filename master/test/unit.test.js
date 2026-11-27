@@ -96,7 +96,12 @@ test("uninstall scripts", () => {
     "--uninstall --mscopilot --channel=stable --system-level --verbose-logging --force-uninstall",
   );
   assert.doesNotMatch(silentCommand('"C:\\x\\copilot_setup.exe" --uninstall /S').args, /\/S/);
-  assert.match(uninstallScript('"C:\\x\\copilot_setup.exe" --uninstall', "Microsoft Copilot"), /\$ok \+= 19/, "19 = Chromium's 'uninstalled'");
+  const copilot = uninstallScript('"C:\\x\\copilot_setup.exe" --uninstall', "Microsoft Copilot");
+  assert.match(copilot, /\$ok \+= 19/, "19 = Chromium's 'uninstalled'");
+  // Edge-family refusals: close the app, allow the uninstall once, retry, put the setting back.
+  assert.match(copilot, /EdgeUpdateDev/);
+  assert.match(copilot, /SetValue\('AllowUninstall', 1, 'DWord'\)/);
+  assert.match(copilot, /DeleteValue\('AllowUninstall'\)/);
   const any = uninstallScript('"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe" --uninstall', "AnyDesk", { timeoutMin: 10 });
   assert.match(any, /WaitForExit\(10 \* 60000\)/, "a hung uninstaller is stopped");
   assert.match(any, /taskkill\.exe \/T \/F/);

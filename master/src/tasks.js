@@ -4,6 +4,7 @@
 
 import { baselineScript, securityStatusScript, repairUpdatesScript, adblockScript, ASR_MODES, SERVICE_PROBLEM } from "./hardening.js";
 import { perfScript, speedScript } from "./metrics.js";
+import { listTaskScript } from "./accounts.js";
 
 const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
 
@@ -66,14 +67,12 @@ export const TASKS = {
 ${REBOOT_PENDING}
 ${WU_SEARCH}
 $n = $found.Count
-if ($n -eq 0) { 'Up to date - no updates waiting.' } else { "$n update(s) waiting:" }
 foreach ($u in $found) { '  - ' + $u.Title + $(if ($u.MsrcSeverity) { ' [' + $u.MsrcSeverity + ']' } else { '' }) }
 $last = (Get-HotFix | Where-Object InstalledOn | Sort-Object InstalledOn -Descending | Select-Object -First 1)
 if ($last) { 'Last update installed: ' + $last.HotFixID + ' on ' + $last.InstalledOn.ToString('yyyy-MM-dd') }
-if (Test-RebootPending) { 'A restart is pending to finish earlier updates.' }
-exit $(if ($n -gt 0) { 1 } else { 0 })`,
-    // Exit 1 = "updates waiting": shown as Failed so it stands out in a fleet view.
-    failMeaning: "updates are waiting (see details)",
+# Updates waiting is a finding, not a failure: the check worked.
+$(if ($n -eq 0) { 'Up to date - no updates waiting.' } else { "$n update(s) waiting - run Install Windows updates." }) + $(if (Test-RebootPending) { ' A restart is pending to finish earlier updates.' } else { '' })
+exit 0`,
   },
   install_updates: {
     label: "Install Windows updates",
@@ -103,6 +102,13 @@ for ($i = 0; $i -lt $ready.Count; $i++) {
 }
 if ($res.RebootRequired -or (Test-RebootPending)) { 'RESTART NEEDED to finish installing.' }
 exit $(if ($failed -gt 0) { 1 } else { 0 })`,
+  },
+  accounts_list: {
+    label: "Read local accounts",
+    group: "Accounts",
+    help: "Reads the PC's local accounts (name, administrator, enabled, last sign-in) and keeps the list on the master — used by the clean checklist (two accounts besides Windows' own, one named Admin). Changes nothing.",
+    minutes: 5,
+    script: () => listTaskScript(),
   },
   repair_updates: {
     label: "Repair Windows Update",

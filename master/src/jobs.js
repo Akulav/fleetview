@@ -28,6 +28,8 @@ import { actionScript, ACTIONS } from "./accounts.js";
 import { renameScript } from "./rename.js";
 import { toggleScript, applyToggle } from "./startup.js";
 import { parseRecord, cleanSnapshot, cleanSpeed } from "./metrics.js";
+import { cleanChecks } from "./cleanliness.js";
+import { cleanAccounts as parseAccounts } from "./accounts.js";
 
 const CHUNK = 256 * 1024;
 /** Unacknowledged bytes allowed in flight per transfer. */
@@ -69,6 +71,7 @@ export class JobEngine extends EventEmitter {
         for (const st of t.steps ?? []) if (st.state === "running") Object.assign(st, { state: "failed", message: "the master restarted while this step was running" });
       }
     }
+    this.backfillTaskRuns();
     hub.on("online", () => this.pump());
     this.pumpTimer = setInterval(() => this.pump(), 30_000);
     this.pumpTimer.unref();
@@ -556,6 +559,7 @@ export class JobEngine extends EventEmitter {
       if (r.success) this.afterSuccess(job, agentId);
       if (job.kind === "task") this.record(job.payload.task, agentId, r);
       this.finish(job, t, r.success ? "succeeded" : "failed", summarize(job, r), { exit_code: r.exit_code, output });
+      if (job.kind === "task") this.noteTask(agentId, job.payload.task, t.state, t.message);
     } catch (e) {
       this.finish(job, t, "failed", e.message);
     }
@@ -577,8 +581,64 @@ export class JobEngine extends EventEmitter {
     }
   }
 
-  /** Keep what a performance snapshot or speed test measured. */
+  /** Keep a task's outcome with the PC (for the clean checklist), then see
+   * whether the PC is now clean. */
+  noteTask(agentId, task, state, message, at = new Date().toISOString()) {
+    const a = this.hub.get(agentId);
+    if (!a || !task || (state !== "succeeded" && state !== "failed")) return;
+    a.task_runs = { ...(a.task_runs ?? {}), [task]: { state, at, message: String(message ?? "").slice(0, 300) } };
+    this.hub.save();
+    this.hub.changed(a);
+    this.evaluateClean(agentId);
+  }
+
+  /** Mark the PC cleaned once every checklist item holds (never unmarks). */
+  evaluateClean(agentId) {
+    const a = this.hub.get(agentId);
+    if (!a || a.cleaned) return false;
+    if (!cleanChecks(a).ok) return false;
+    this.markCleaned(agentId, "auto", "every clean-up check passed");
+    this.log(`${a.hostname}: every clean-up check passed — marked as cleaned`);
+    return true;
+  }
+
+  /** Task outcomes from the job history, for PCs that don't have them yet
+   * (the first start after an upgrade). */
+  backfillTaskRuns() {
+    const seen = new Set();
+    for (const job of [...this.file.value].reverse()) {
+      for (const [id, t] of Object.entries(job.targets)) {
+        const a = this.hub.get(id);
+        if (!a) continue;
+        const at = t.finished_at ?? job.created_at;
+        const note = (task, state, message) => {
+          if (!task || (state !== "succeeded" && state !== "failed")) return;
+          const cur = a.task_runs?.[task];
+          if (cur && String(cur.at) >= String(at)) return;
+          a.task_runs = { ...(a.task_runs ?? {}), [task]: { state, at, message: String(message ?? "").slice(0, 300) } };
+          seen.add(id);
+        };
+        if (job.kind === "task") note(job.payload?.task, t.state, t.message);
+        if (job.kind === "batch") (t.steps ?? []).forEach((st, i) => job.payload?.steps?.[i]?.type === "task" && note(job.payload.steps[i].task, st.state, st.message));
+      }
+    }
+    if (seen.size) this.hub.save();
+    for (const id of seen) this.evaluateClean(id);
+  }
+
+  /** Keep what a performance snapshot, speed test or account list measured. */
   record(task, agentId, r) {
+    if (task === "accounts_list") {
+      const list = parseAccounts(parseRecord(r.stdout, "FVACCOUNTS"));
+      const a = this.hub.get(agentId);
+      if (a && list) {
+        a.accounts = list;
+        a.accounts_at = new Date().toISOString();
+        this.hub.save();
+        this.hub.changed(a);
+      }
+      return;
+    }
     if (!this.metrics) return;
     if (task === "perf_snapshot") {
       const snap = cleanSnapshot(parseRecord(r.stdout, "FVPERF"));
@@ -681,7 +741,10 @@ export class JobEngine extends EventEmitter {
       const like = s.type === "task" ? { kind: "task", payload: { task: s.task } } : { kind: "script", payload: { script_id: s.script_id } };
       Object.assign(st, { state: r.success ? "succeeded" : "failed", message: summarize(like, r), exit_code: r.exit_code });
       outputs.push(`=== ${s.label} (${r.success ? "done" : "failed"})\n${[r.stdout, r.stderr && `[stderr]\n${r.stderr}`].filter(Boolean).join("\n").trim()}`);
-      if (s.type === "task") this.record(s.task, agentId, r);
+      if (s.type === "task") {
+        this.record(s.task, agentId, r);
+        this.noteTask(agentId, s.task, st.state, st.message);
+      }
     }
     const failed = t.steps.filter((x) => x.state === "failed");
     const done = t.steps.filter((x) => x.state === "succeeded").length;

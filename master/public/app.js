@@ -881,7 +881,9 @@ function renderCleaning(main, full) {
   put(
     main,
     pageHead("Cleaning", "Which computers are cleaned, and whether it made them faster.",
-      h("button", { class: "btn primary", disabled: !dirty.length, onclick: () => cleanUp(dirty.map((a) => a.id)) }, icon("sparkles", 16), `Clean up the ${dirty.length} not cleaned…`)),
+      h("button", { class: "btn", onclick: () => cleanUp(dirty.map((a) => a.id)) , disabled: !dirty.length }, icon("sparkles", 16), "Clean-up (debloat, temp files)…"),
+      h("button", { class: "btn primary", disabled: !dirty.length, onclick: () => runMissing(dirty.map((a) => a.id)) }, icon("play", 16), `Finish the checklist on ${dirty.length} PC(s)…`)),
+    h("div", { class: "note info ck-rule" }, "A PC is marked cleaned by itself when: the security baseline is applied, a security check was done, the adblocker is installed, Windows Update was repaired, checked and installed, the clean-up ran, and it has exactly two accounts besides Windows' own, one of them named Admin. Hover a checklist count for what's missing."),
     h(
       "div",
       { class: "kpis" },
@@ -897,6 +899,7 @@ function renderCleaning(main, full) {
         h("span", { class: "spacer" }),
         sel.length
           ? [h("span", { class: "sub" }, `${sel.length} chosen`),
+             h("button", { class: "btn small primary", onclick: () => runMissing(sel) }, icon("play", 14), "Run what's missing…"),
              h("button", { class: "btn small", onclick: () => cleanUp(sel) }, icon("sparkles", 14), "Clean up…"),
              h("button", { class: "btn small", onclick: () => setCleaned(sel, true).then(() => CL.selected.clear()) }, icon("check", 14), "Mark cleaned"),
              h("button", { class: "icon-btn", title: "Clear the selection", onclick: () => { CL.selected.clear(); renderCleaning(main, true); } }, icon("x", 16))]
@@ -905,7 +908,7 @@ function renderCleaning(main, full) {
         h("table", { class: "grid" },
           h("thead", {}, h("tr", {},
             h("th", { class: "cb" }, h("input", { type: "checkbox", checked: list.length > 0 && list.every((a) => CL.selected.has(a.id)), onclick: (e) => { list.forEach((a) => (e.target.checked ? CL.selected.add(a.id) : CL.selected.delete(a.id))); renderCleaning(main, true); } })),
-            h("th", {}, "Computer"), h("th", {}, "Cleaned"), h("th", { class: "hide-sm" }, "CPU before → after"), h("th", { class: "hide-sm" }, "Memory before → after"), h("th", { class: "hide-md" }, "Boot"), h("th", { class: "act" }))),
+            h("th", {}, "Computer"), h("th", {}, "Cleaned"), h("th", {}, "Checklist"), h("th", { class: "hide-sm" }, "CPU before → after"), h("th", { class: "hide-sm" }, "Memory before → after"), h("th", { class: "hide-md" }, "Boot"), h("th", { class: "act" }))),
           h("tbody", {},
             list.length
               ? list.map((a) => {
@@ -917,15 +920,18 @@ function renderCleaning(main, full) {
                     h("td", {}, a.cleaned
                       ? h("span", { class: "status-cell" }, h("span", { class: "badge ok" }, icon("sparkles", 12), new Date(a.cleaned.at).toLocaleDateString()), h("span", { class: "sub" }, `${ago(a.cleaned.at)}${a.cleaned.by ? ` · ${a.cleaned.by}` : ""}${a.cleaned.note ? ` · ${a.cleaned.note}` : ""}`))
                       : h("span", { class: "badge warn" }, "Not cleaned")),
+                    h("td", {}, a.clean
+                      ? h("span", { class: `ck-count small${a.clean.ok ? " ok" : ""}`, title: a.clean.items.map((i) => `${i.ok ? "✓" : "✗"} ${i.label}${i.ok ? "" : ` — ${i.detail}`}`).join("\n") }, `${a.clean.done}/${a.clean.total}`)
+                      : h("span", { class: "sub" }, "—")),
                     h("td", { class: "hide-sm" }, a.cleaned ? both(r?.before?.cpu, r?.after?.cpu) : h("span", { class: "sub" }, "—")),
                     h("td", { class: "hide-sm" }, a.cleaned ? both(r?.before?.mem, r?.after?.mem) : h("span", { class: "sub" }, "—")),
                     h("td", { class: "hide-md" }, r && (r.boot_before || r.boot_after) ? [`${r.boot_before ? Math.round(r.boot_before / 1000) : "—"} → ${r.boot_after ? Math.round(r.boot_after / 1000) : "—"} s `, delta(r.boot_before && r.boot_before / 1000, r.boot_after && r.boot_after / 1000, " s") ?? ""] : h("span", { class: "sub" }, "—")),
                     h("td", { class: "act" }, a.cleaned
                       ? h("span", { class: "row-go" }, icon("chevronRight", 16))
-                      : h("button", { class: "btn small", onclick: (e) => { e.stopPropagation(); cleanUp([a.id]); } }, "Clean up…")),
+                      : h("button", { class: "btn small", onclick: (e) => { e.stopPropagation(); runMissing([a.id]); } }, "Run what's missing…")),
                   );
                 })
-              : h("tr", { class: "empty-row" }, h("td", { colspan: 7 }, h("div", { class: "empty-state" }, h("span", { class: "es-ico ok" }, icon("sparkles", 28)), h("b", {}, CL.filter === "dirty" ? "Every computer is cleaned" : "Nothing here yet"), h("span", {}, "Run a Clean-up (snapshot → debloat → temp files → mark) from Apply changes."))))),
+              : h("tr", { class: "empty-row" }, h("td", { colspan: 8 }, h("div", { class: "empty-state" }, h("span", { class: "es-ico ok" }, icon("sparkles", 28)), h("b", {}, CL.filter === "dirty" ? "Every computer is cleaned" : "Nothing here yet"), h("span", {}, "Run a Clean-up (snapshot → debloat → temp files → mark) from Apply changes."))))),
         ),
       ),
     ),
@@ -1891,7 +1897,8 @@ function mountDevice(mainEl, id, startTab = "overview") {
         : h("button", { class: "btn small primary", onclick: () => setCleaned([id], true) }, "Mark as cleaned"),
       a.cleaned
         ? h("div", {}, h("span", { class: "pill ok" }, "✓ Cleaned"), " ", h("span", { class: "sub" }, `${new Date(a.cleaned.at).toLocaleDateString()} (${ago(a.cleaned.at)}) by ${a.cleaned.by || "—"}${a.cleaned.note ? ` — ${a.cleaned.note}` : ""}`))
-        : h("div", {}, h("span", { class: "pill warn" }, "Not cleaned yet"), " ", h("span", { class: "sub" }, "Take a snapshot first, clean, then mark it: the averages before and after show whether it helped.")),
+        : h("div", {}, h("span", { class: "pill warn" }, "Not cleaned yet"), " ", h("span", { class: "sub" }, "Marked by itself when the checklist below is complete.")),
+      cleanChecklist(a),
       c
         ? h(
             "table",
@@ -1984,7 +1991,13 @@ function mountDevice(mainEl, id, startTab = "overview") {
   };
   /** How a task last went on this PC: green done, amber "found something", red failed. */
   const runState = (label, failMeaning = null) => {
-    const r = lastRun(id, label);
+    // The result kept with the PC (survives the Activity history being trimmed);
+    // the history only for something still running or newer.
+    const live = lastRun(id, label);
+    const tid = S.tasks.find((t) => t.label === label)?.id;
+    const kept = tid ? S.agents.get(id)?.task_runs?.[tid] : null;
+    let r = live;
+    if (kept && !(live && RUNNING.has(live.state)) && (!live || String(kept.at) >= String(live.at))) r = { state: kept.state, at: kept.at, message: kept.message, job: live?.job ?? null };
     if (!r) return { r: null, cls: "", text: "Never run on this PC", ic: null };
     if (RUNNING.has(r.state)) return { r, cls: "running", text: `${STATE_LABEL[r.state]?.[0] ?? r.state}…`, ic: "clock" };
     if (r.state === "succeeded") return { r, cls: "done", text: `Done ${ago(r.at)}`, ic: "checkCircle" };
@@ -2023,7 +2036,7 @@ function mountDevice(mainEl, id, startTab = "overview") {
           h("div", {}, statusLine(t.label, t.fail_meaning)),
           h("div", { class: "sub mt-help", title: t.help }, t.help)),
         h("div", { class: "set-btns" },
-          s.r ? h("button", { class: "btn small ghost", onclick: () => openJob(s.r.job.id) }, "Details") : null,
+          s.r?.job ? h("button", { class: "btn small ghost", onclick: () => openJob(s.r.job.id) }, "Details") : null,
           h("button", {
             class: `btn small${!s.r && !withForm ? " primary" : ""}`,
             disabled: running || (offline && !withForm),
@@ -2034,6 +2047,7 @@ function mountDevice(mainEl, id, startTab = "overview") {
     };
     const done = S.tasks.filter((t) => runState(t.label, t.fail_meaning).cls === "done").length;
     return [
+      h("section", { class: "card set-card ck-card" }, h("div", { class: "set-head" }, h("h3", {}, "Clean checklist"), h("p", { class: "sub" }, "When all of these hold, the PC is marked cleaned by itself.")), cleanChecklist(a)),
       h("div", { class: "mt-summary" },
         h("span", { class: "run-status done" }, icon("checkCircle", 15), `${done} of ${S.tasks.length} done on this PC`),
         h("span", { class: "spacer" }),
@@ -2733,8 +2747,8 @@ function openApply(ids) {
 }
 
 const APPLY_PRESETS = [
-  { id: "setup", label: "New PC setup", help: "Snapshot, security baseline, adblocker, debloat, Windows updates, mark cleaned", steps: ["task:perf_snapshot", "task:security_baseline", "task:adblock", "script:debloat", "task:install_updates", "mark"] },
-  { id: "clean", label: "Clean-up", help: "Snapshot before, debloat, temp files, startup check, mark cleaned", steps: ["task:perf_snapshot", "script:debloat", "task:cleanup", "task:disk_health", "mark"] },
+  { id: "setup", label: "New PC setup", help: "Everything the clean checklist needs (Windows Update repaired, checked, installed; security baseline + check; adblocker; clean-up; accounts read) plus a snapshot and the debloat script. The PC is marked cleaned by itself when every check passes.", steps: ["task:perf_snapshot", "task:repair_updates", "task:check_updates", "task:install_updates", "task:security_baseline", "task:security_status", "task:adblock", "script:debloat", "task:cleanup", "task:accounts_list"] },
+  { id: "clean", label: "Clean-up", help: "Snapshot before, debloat, temp files, accounts read — the PC is marked cleaned by itself once its whole checklist passes", steps: ["task:perf_snapshot", "script:debloat", "task:cleanup", "task:disk_health", "task:accounts_list"] },
   { id: "secure", label: "Secure", help: "Security baseline, adblocker, Defender update + scan, security check", steps: ["task:security_baseline", "task:adblock", "task:defender_scan", "task:security_status"] },
   { id: "health", label: "Health check (changes nothing)", help: "Security check, updates waiting, disk health, performance, internet speed", steps: ["task:security_status", "task:check_updates", "task:disk_health", "task:perf_snapshot", "task:speed_test"] },
   { id: "updates", label: "Fix & install updates", help: "Repair Windows Update, then install everything waiting", steps: ["task:repair_updates", "task:install_updates"] },
@@ -3298,6 +3312,33 @@ function renderActivity(main) {
     h("div", { class: "card log" }, [...S.log].reverse().slice(0, 200).map((l) => h("div", {}, h("time", {}, new Date(l.at).toLocaleTimeString()), l.message))),
   );
 }
+/** Order in which missing checklist items are run. */
+const CLEAN_ORDER = ["repair_updates", "check_updates", "install_updates", "security_baseline", "security_status", "adblock", "cleanup", "accounts_list"];
+/** Open Apply changes with exactly what the checklist still needs on these PCs. */
+function runMissing(ids) {
+  const need = new Set();
+  for (const id of ids) for (const it of S.agents.get(id)?.clean?.items ?? []) if (!it.ok) need.add(it.id === "accounts" ? "accounts_list" : it.id);
+  if (!need.size) return toast("Nothing missing: every check already passed");
+  AP.steps = [];
+  CLEAN_ORDER.filter((t) => need.has(t)).forEach((t) => apAdd(`task:${t}`));
+  AP.name = "Finish the clean checklist";
+  openApply(ids);
+}
+/** The clean checklist of a PC: green ✓ per item met, with the detail. */
+function cleanChecklist(a, { button = true } = {}) {
+  const c = a.clean;
+  if (!c) return null;
+  return h("div", { class: "checklist" },
+    h("div", { class: "ck-head" },
+      h("span", { class: `ck-count${c.ok ? " ok" : ""}` }, `${c.done}/${c.total}`),
+      h("span", { class: "grow" }, c.ok ? (a.cleaned ? "Every check passed — cleaned" : "Every check passed") : `${c.total - c.done} to go before this PC counts as cleaned`),
+      button && !c.ok ? h("button", { class: "btn small primary", onclick: () => runMissing([a.id]) }, icon("play", 14), "Run what's missing") : null),
+    h("ul", { class: "ck-list" }, c.items.map((it) =>
+      h("li", { class: it.ok ? "ok" : "" },
+        h("span", { class: "ck-mark" }, icon(it.ok ? "check" : "x", 13)),
+        h("span", { class: "grow" }, h("b", {}, it.label), h("span", { class: "sub" }, ` — ${it.detail}${it.at ? ` · ${ago(it.at)}` : ""}`))))));
+}
+
 /** The result in one coloured line, for lists. */
 function jobResultLine(j) {
   const r = jobResult(j);

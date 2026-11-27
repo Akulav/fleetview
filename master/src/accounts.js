@@ -172,6 +172,34 @@ export function actionTitle(p) {
   return p.action === "rename" ? `Rename user ${p.user} → ${p.new_name}` : `${a}: ${p.user}`;
 }
 
+/** The account list as a task (batches, the clean checklist): the JSON on an
+ * FVACCOUNTS line, then a summary line for Activity. */
+export function listTaskScript() {
+  return listScript().replace(
+    "ConvertTo-Json -InputObject $list -Compress -Depth 3",
+    String.raw`'FVACCOUNTS ' + (ConvertTo-Json -InputObject $list -Compress -Depth 3)
+$people = @($list | Where-Object { -not $_.default_kind -and -not $_.builtin })
+"$($list.Count) local account(s); besides Windows' own: " + $(if ($people.Count) { ($people | ForEach-Object { $_.name + $(if ($_.admin) { ' (admin)' } else { '' }) + $(if (-not $_.enabled) { ' (disabled)' } else { '' }) }) -join ', ' } else { 'none' })`,
+  );
+}
+
+/** What is kept about accounts on the master (no SIDs, no password data). */
+export function cleanAccounts(raw) {
+  if (raw === null || raw === undefined) return null;
+  const list = Array.isArray(raw) ? raw : [raw];
+  return list
+    .filter((u) => u && typeof u.name === "string")
+    .map((u) => ({
+      name: u.name.slice(0, 64),
+      enabled: !!u.enabled,
+      admin: !!u.admin,
+      builtin: !!u.builtin,
+      default_kind: u.default_kind === "builtin" || u.default_kind === "setup" ? u.default_kind : null,
+      last_logon: typeof u.last_logon === "string" ? u.last_logon : null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** Parse the list script's output. */
 export function parseList(stdout) {
   const text = String(stdout ?? "").trim();

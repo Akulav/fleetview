@@ -8,7 +8,8 @@ import { join, extname, normalize } from "node:path";
 import { APP_ROOT } from "./config.js";
 import { PRESETS, WARNINGS } from "./installers.js";
 import { taskCatalog, TASKS, cleanOptions } from "./tasks.js";
-import { ACTIONS, listScript, parseList, validate as validateAccount, actionTitle } from "./accounts.js";
+import { ACTIONS, listScript, parseList, validate as validateAccount, actionTitle, cleanAccounts } from "./accounts.js";
+import { cleanChecks } from "./cleanliness.js";
 import { agentConfigJson, importIdentity, identityPath } from "./identity.js";
 import { writeJsonAtomic } from "./store.js";
 import { compareVersions, withTrailer } from "./agentpkg.js";
@@ -277,11 +278,19 @@ export function startWeb({ config, hub, jobs, library, pkg, builder, auth, ident
       }
       if (seg[2] === "accounts" && m === "POST") {
         const r = await quickScript(a, listScript());
+        let list;
         try {
-          return json(res, { accounts: parseList(r.stdout), at: new Date().toISOString() });
+          list = parseList(r.stdout);
         } catch (e) {
           throw new HttpError(502, e.message);
         }
+        // Kept for the clean checklist (two accounts besides Windows' own, one Admin).
+        a.accounts = cleanAccounts(list);
+        a.accounts_at = new Date().toISOString();
+        hub.save();
+        hub.changed(a);
+        jobs.evaluateClean(a.agent_id);
+        return json(res, { accounts: list, at: a.accounts_at });
       }
       if (seg[2] === "startup" && m === "POST") {
         return json(res, { startup: await readStartup(a), at: a.startup_at });
@@ -884,6 +893,8 @@ export function agentSummary(a, pkg, metrics = null) {
     emanagement: a.emanagement ?? null,
     cleaned: a.cleaned ?? null,
     speed: metrics?.lastSpeed(a.agent_id) ?? null,
+    clean: cleanChecks(a),
+    task_runs: a.task_runs ?? {},
   };
 }
 

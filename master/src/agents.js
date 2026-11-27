@@ -117,6 +117,9 @@ export class AgentHub extends EventEmitter {
       startup_at: a.startup_at ?? null,
       cleaned: a.cleaned ?? null,
       cleanings: a.cleanings ?? [],
+      task_runs: a.task_runs ?? {},
+      accounts: a.accounts ?? null,
+      accounts_at: a.accounts_at ?? null,
     }));
     this.file.touch();
   }

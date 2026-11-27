@@ -2,7 +2,7 @@
 // speed tests, "cleaned" marks and batches of changes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -278,6 +278,85 @@ test("API: a batch of changes runs in order per PC, records metrics and marks PC
     // Telemetry feeds the hourly history.
     m.hub.emit("telemetry", "a", { cpu_usage_pct: 40, mem_used_mb: 4096, mem_total_mb: 8192 });
     assert.equal(m.metrics.pc("a").h.at(-1).n, 1);
+  } finally {
+    for (const a of m.hub.list()) a.conn = null;
+    await m.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("clean checklist: every item, and the account rule", async () => {
+  const { cleanChecks, missingTasks } = await import("../src/cleanliness.js");
+  const ok = (at = "2026-11-27T10:00:00Z") => ({ state: "succeeded", at, message: "done" });
+  const runs = { security_baseline: ok(), security_status: { state: "failed", at: "2026-11-27T10:00:00Z", message: "some protection is off" }, adblock: ok(), repair_updates: ok(), check_updates: ok(), install_updates: ok(), cleanup: ok() };
+  const people = [{ name: "Admin", admin: true, enabled: true }, { name: "contabil", enabled: true }];
+  const defaults = [{ name: "Administrator", builtin: true, default_kind: "builtin" }, { name: "defaultuser0", default_kind: "setup" }];
+  let c = cleanChecks({ task_runs: runs, accounts: [...people, ...defaults] });
+  assert.equal(c.ok, true, JSON.stringify(c.items.filter((i) => !i.ok)));
+  assert.equal(c.total, 8);
+  // A security check that found something off still counts as done.
+  assert.equal(c.items.find((i) => i.id === "security_status").ok, true);
+  // Accounts: unread, wrong count, or no Admin all fail.
+  assert.equal(cleanChecks({ task_runs: runs }).items.at(-1).ok, false);
+  assert.equal(cleanChecks({ task_runs: runs, accounts: [...people, { name: "third" }] }).ok, false);
+  assert.equal(cleanChecks({ task_runs: runs, accounts: [{ name: "a" }, { name: "b" }] }).ok, false);
+  assert.equal(cleanChecks({ task_runs: runs, accounts: [{ name: "admin" }, { name: "b" }] }).ok, true, "Admin matched without case");
+  // A failed baseline, or the adblocker removed later, undo those items.
+  assert.equal(cleanChecks({ task_runs: { ...runs, security_baseline: { state: "failed", at: "x" } }, accounts: people }).ok, false);
+  c = cleanChecks({ task_runs: { ...runs, adblock_remove: ok("2026-11-28T00:00:00Z") }, accounts: people });
+  assert.match(c.items.find((i) => i.id === "adblock").detail, /removed again/);
+  assert.deepEqual(missingTasks({ task_runs: { cleanup: ok() } }).sort(), ["accounts_list", "adblock", "check_updates", "install_updates", "repair_updates", "security_baseline", "security_status"].sort());
+});
+
+test("API: a PC is marked cleaned by itself when its checklist completes", async () => {
+  const dir = tmp("fv-clean-api-");
+  const m = await startMaster(
+    { dataDir: dir, httpHost: "127.0.0.1", httpPort: 0, agentPort: null, discovery: false, publicUrl: "http://127.0.0.1", secureCookies: false, adminUser: "admin", adminPassword: "console-pw-123", adminPasswordHash: "", agentBuild: false, autoScriptDelayMs: 0 },
+    { quiet: true },
+  );
+  try {
+    const base = `http://127.0.0.1:${m.web.port}`;
+    let cookie = "";
+    const call = async (method, path, body) => {
+      const res = await fetch(base + path, { method, headers: { "X-FleetView": "1", cookie, "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      const sc = res.headers.get("set-cookie");
+      if (sc) cookie = sc.split(";")[0];
+      return { status: res.status, data: await res.json() };
+    };
+    const done = async (jobId) => {
+      for (let i = 0; i < 300; i++) {
+        const j = m.jobs.get(jobId);
+        if (Object.values(j.targets).every((t) => ["succeeded", "failed", "skipped", "cancelled"].includes(t.state))) return j;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error("job did not finish");
+    };
+    await call("POST", "/api/login", { user: "admin", password: "console-pw-123" });
+    const accounts = (names) => `FVACCOUNTS ${JSON.stringify([{ name: "Administrator", builtin: true, default_kind: "builtin" }, ...names.map((n) => ({ name: n, enabled: true, admin: n === "Admin" }))])}\n3 local accounts`;
+    let names = ["Admin", "contabil", "extra"];
+    fakeAgent(m.hub, "a", "PC-A", (s) =>
+      s.includes("list local accounts") ? { stdout: accounts(names) }
+      : s.includes("Check for Windows updates") ? { stdout: "2 update(s) waiting - run Install Windows updates." }
+      : { stdout: "done" });
+    const steps = ["repair_updates", "check_updates", "install_updates", "security_baseline", "security_status", "adblock", "cleanup", "accounts_list"].map((task) => ({ type: "task", task }));
+    let r = await call("POST", "/api/jobs", { kind: "batch", targets: ["a"], payload: { steps } });
+    let j = await done(r.data.job.id);
+    assert.equal(j.targets.a.state, "succeeded", "updates waiting is not a failure");
+    let st = (await call("GET", "/api/state")).data.agents.find((x) => x.id === "a");
+    assert.equal(st.clean.done, 7, "three people: the account rule fails");
+    assert.equal(st.cleaned, null);
+    // The extra account goes: reading the accounts again completes the checklist.
+    names = ["Admin", "contabil"];
+    r = await call("POST", "/api/jobs", { kind: "task", targets: ["a"], payload: { task: "accounts_list" } });
+    await done(r.data.job.id);
+    st = (await call("GET", "/api/state")).data.agents.find((x) => x.id === "a");
+    assert.equal(st.clean.ok, true);
+    assert.equal(st.cleaned.by, "auto");
+    // Kept across a master restart: task results live with the PC.
+    m.hub.file.flush();
+    const saved = JSON.parse(readFileSync(join(dir, "agents.json"), "utf8")).find((x) => x.agent_id === "a");
+    assert.equal(saved.task_runs.cleanup.state, "succeeded");
+    assert.equal(saved.accounts.length, 3);
   } finally {
     for (const a of m.hub.list()) a.conn = null;
     await m.close();
