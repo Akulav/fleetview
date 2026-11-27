@@ -136,8 +136,11 @@ function checkWatch(j) {
   const r = jobResult(j);
   if (!r.done) return;
   WATCH.delete(j.id);
-  // The result is already on screen in its own panel.
-  if (S.drawer?.jobId === j.id) return;
+  if (dockOn()) {
+    DOCK.flash = j.id;
+    setTimeout(() => { if (DOCK.flash === j.id) { DOCK.flash = null; renderDock(); } }, 4000);
+    return;
+  }
   notify({ title: `${j.title}: ${r.headline}`, text: r.text, tone: r.tone, actionLabel: "Show result", action: () => openJob(j.id), timeout: r.tone === "bad" ? 30_000 : 12_000 });
 }
 
@@ -232,6 +235,7 @@ function connectEvents() {
   es.addEventListener("job", (e) => {
     const j = JSON.parse(e.data);
     S.jobs.set(j.id, j);
+    dockJobChanged(j);
     checkWatch(j);
     schedule();
   });
@@ -273,6 +277,7 @@ function schedule() {
     renderMain();
     refreshDrawer();
     renderTabs();
+    renderDock();
   });
 }
 
@@ -423,11 +428,13 @@ function toggleTheme() {
 function renderShell() {
   S.view = viewFromHash();
   const collapsed = safeGet("fv-side") === "collapsed";
+  const dockPref = safeGet("fv-dock");
+  const dock = dockPref ? dockPref === "on" : innerWidth >= 1400;
   put(
     $("#app"),
     h(
       "div",
-      { class: `shell${collapsed ? " collapsed" : ""}`, id: "shell" },
+      { class: `shell${collapsed ? " collapsed" : ""}${dock ? " dock-on" : ""}`, id: "shell" },
       h("aside", { class: "side", id: "side" }),
       h("div", { class: "side-scrim", onclick: () => $("#shell").classList.remove("nav-open") }),
       h(
@@ -446,11 +453,14 @@ function renderShell() {
         ),
         h("main", { id: "main" }),
       ),
+      h("aside", { class: "dock", id: "dock" }),
+      h("div", { class: "dock-scrim", onclick: () => setDock(false) }),
     ),
     h("div", { id: "drawer-root" }),
   );
   renderTabs();
   renderMain(true);
+  renderDock();
 }
 
 /** Sidebar and header: navigation, counts, user. (Name kept: called on every update.) */
@@ -528,7 +538,7 @@ function renderTabs() {
         : h("b", {}, VIEWS[S.view]?.label ?? ""));
   }
   const run = $("#hdr-running");
-  if (run) put(run, running ? h("button", { class: "run-pill", onclick: () => go("activity"), title: "Actions in progress" }, h("span", { class: "pulse" }), `${running} running`) : null);
+  if (run) put(run, h("button", { class: `run-pill${running ? "" : " idle"}${dockOn() ? " on" : ""}`, onclick: () => setDock(!dockOn()), title: dockOn() ? "Hide the activity column" : "Show the activity column" }, running ? h("span", { class: "pulse" }) : icon("activity", 15), running ? `${running} running` : "Activity"));
   document.title = `${pcName ?? VIEWS[S.view]?.label ?? "FleetView"} · FleetView`;
 }
 
@@ -725,6 +735,178 @@ function pcQuickMenu(anchor, a) {
   ]);
 }
 
+// ---------------------------------------------------------- activity dock --
+// The column on the right of every page: what is running, with progress, and
+// the latest results. A job expands in place (each PC's result, output, retry)
+// instead of opening a panel, so you stay on the page you're on.
+const DOCK = { open: null, details: new Map(), seen: new Map(), outputs: new Set(), flash: null };
+function dockOn() {
+  return !!$("#shell")?.classList.contains("dock-on");
+}
+function setDock(on) {
+  const s = $("#shell");
+  if (!s) return;
+  s.classList.toggle("dock-on", on);
+  safeSet("fv-dock", on ? "on" : "off");
+  renderTabs();
+  renderDock();
+}
+/** Show a job's result: expanded in the Activity column. */
+function openJob(id) {
+  DOCK.open = id;
+  if (!dockOn()) setDock(true);
+  loadJobDetail(id);
+  renderDock();
+  setTimeout(() => $(`#dock-job-${id}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }), 0);
+}
+async function loadJobDetail(id) {
+  try {
+    const r = await api("GET", `/api/jobs/${id}`);
+    DOCK.details.set(id, r.job);
+    DOCK.seen.set(id, Object.values(r.job.targets).filter((t) => t.finished_at).length);
+    renderDock();
+  } catch {}
+}
+/** Outputs arrive as PCs finish: refetch the open job when that changes. */
+function dockJobChanged(j) {
+  if (DOCK.open !== j.id) return;
+  const finished = Object.values(j.targets).filter((t) => t.finished_at).length;
+  if (DOCK.seen.get(j.id) !== finished) loadJobDetail(j.id);
+}
+function renderDock() {
+  const root = $("#dock");
+  if (!root) return;
+  const jobs = [...S.jobs.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const running = jobs.filter((j) => !jobResult(j).done);
+  const recent = jobs.filter((j) => jobResult(j).done).slice(0, 20);
+  const y = root.querySelector(".dock-body")?.scrollTop ?? 0;
+  put(
+    root,
+    h("div", { class: "dock-head" },
+      icon("activity", 16),
+      h("b", {}, "Activity"),
+      running.length ? h("span", { class: "nav-count blue" }, running.length) : null,
+      h("span", { class: "spacer" }),
+      h("button", { class: "icon-btn", title: "Hide the activity column", onclick: () => setDock(false) }, icon("x", 16))),
+    h("div", { class: "dock-body" },
+      h("div", { class: "dock-sec" }, "Running", h("span", { class: "sub" }, running.length ? ` ${running.length}` : "")),
+      running.length ? running.map(dockItem) : h("div", { class: "dock-empty sub" }, "Nothing running. Start a task and it appears here with live progress."),
+      h("div", { class: "dock-sec" }, "Recent"),
+      recent.length ? recent.map(dockItem) : h("div", { class: "dock-empty sub" }, "No results yet.")),
+    h("div", { class: "dock-foot" }, h("button", { class: "btn ghost small", onclick: () => go("activity") }, "All activity and log", icon("chevronRight", 14))),
+  );
+  const body = root.querySelector(".dock-body");
+  if (body) body.scrollTop = y;
+}
+const TONE_ICON = { ok: "checkCircle", bad: "alert", warn: "clock", running: "activity" };
+function dockItem(j) {
+  const r = jobResult(j);
+  const open = DOCK.open === j.id;
+  const n = Object.keys(j.targets).length;
+  return h(
+    "div",
+    { class: `dock-item ${r.tone}${open ? " open" : ""}${DOCK.flash === j.id ? " flash" : ""}`, id: `dock-job-${j.id}` },
+    h("button", { class: "dock-row", onclick: () => { DOCK.open = open ? null : j.id; if (!open) loadJobDetail(j.id); renderDock(); } },
+      h("span", { class: "dock-ico" }, icon(TONE_ICON[r.tone] ?? "activity", 16)),
+      h("span", { class: "grow" },
+        h("b", {}, j.title),
+        h("span", { class: "dock-res" }, r.headline, r.text && !open ? h("span", { class: "sub" }, ` — ${r.text}`) : null),
+        h("span", { class: "sub" }, `${ago(j.created_at)}${n > 1 ? ` · ${n} PCs` : ""}${j.by && j.by !== S.user ? ` · ${j.by}` : ""}`)),
+      icon(open ? "chevronUp" : "chevronDown", 14, "dim")),
+    !r.done ? summaryBar(j, false) : null,
+    open ? dockDetail(j, DOCK.details.get(j.id)) : null,
+  );
+}
+function dockDetail(j, det) {
+  const rows = Object.entries(j.targets).sort(([, a], [, b]) => order(a.state) - order(b.state) || a.hostname.localeCompare(b.hostname));
+  const failed = (j.counts.failed ?? 0) + (j.counts.skipped ?? 0) + (j.counts.cancelled ?? 0);
+  const waiting = (j.counts.queued ?? 0) + (j.counts.waiting ?? 0);
+  return h(
+    "div",
+    { class: "dock-detail" },
+    rows.map(([aid, t]) => {
+      const out = det?.targets?.[aid]?.output;
+      const key = `${j.id}:${aid}`;
+      // One PC or a failure: the output is shown without a click.
+      const show = DOCK.outputs.has(key) !== (rows.length === 1 || t.state === "failed");
+      return h("div", { class: `dock-target t-${t.state}` },
+        h("div", { class: "row" },
+          h("a", { href: `#/pc/${encodeURIComponent(aid)}`, class: "host-link", onclick: (e) => { e.preventDefault(); openDevice(aid); } }, t.hostname),
+          h("span", { class: "spacer" }),
+          statePill(t.state)),
+        t.message ? h("div", { class: "msg" }, t.message) : null,
+        t.state === "sending" ? h("div", { class: "progress" }, h("i", { style: { width: `${Math.round((t.progress ?? 0) * 100)}%` } })) : null,
+        t.steps ? h("ol", { class: "job-steps" }, t.steps.map((st) => h("li", { class: `st-${st.state}` }, h("span", { class: "grow" }, st.label, st.message ? h("span", { class: "sub" }, ` — ${st.message}`) : null), statePill(st.state)))) : null,
+        out ? h("button", { class: "linkish", onclick: () => { DOCK.outputs.has(key) ? DOCK.outputs.delete(key) : DOCK.outputs.add(key); renderDock(); } }, show ? "Hide output" : "Show output") : null,
+        show && out ? h("pre", { class: "out" }, out) : null);
+    }),
+    h("div", { class: "dock-actions" },
+      failed ? h("button", { class: "btn small", onclick: () => api("POST", `/api/jobs/${j.id}/retry`).catch(fail) }, icon("refresh", 14), `Retry ${failed}`) : null,
+      waiting ? h("button", { class: "btn small", onclick: () => api("POST", `/api/jobs/${j.id}/cancel`).catch(fail) }, `Cancel ${waiting} waiting`) : null,
+      jobResult(j).done && !waiting ? h("button", { class: "btn small ghost", onclick: () => api("DELETE", `/api/jobs/${j.id}`).then(() => { DOCK.open = null; }).catch(fail) }, "Remove") : null),
+    j.detail || det?.script ? h("details", { class: "dock-sent" }, h("summary", { class: "sub" }, det?.script ? "Script that ran" : "What was sent"), h("pre", { class: "out" }, det?.script ?? j.detail)) : null,
+  );
+}
+
+// ------------------------------------------------------------- run tasks --
+/** Start a task with its options on PCs, from wherever you are. The result
+ * shows up in the Activity column; nothing opens. */
+async function startTask(ids, t, o = {}, waitOffline = false) {
+  if (!ids.length) return toast("Choose computers first", true);
+  if ((t.id === "restart" || t.id === "shutdown") && !confirm(`${t.label}: ${ids.length === 1 ? S.agents.get(ids[0])?.hostname : plural(ids.length, "computer")} in ${o.delay ?? t.options?.delay_min ?? 5} min?`)) return null;
+  const options = t.choices?.asr
+    ? { asr: o.asr ?? t.options.asr, controlled_folders: !!(o.cfa ?? t.options.controlled_folders) }
+    : t.options ? { delay_min: Number(o.delay ?? t.options.delay_min) || 0, message: o.message ?? t.options.message ?? "" } : {};
+  try {
+    const { job } = await api("POST", "/api/jobs", { kind: "task", targets: ids, wait_offline: waitOffline && !POWER.has(t.id), payload: { task: t.id, options } });
+    S.jobs.set(job.id, job);
+    watchJob(job);
+    jobStarted(job);
+    return job;
+  } catch (e) {
+    fail(e);
+    return null;
+  }
+}
+/** A job just started: show it in the Activity column (opened on wide screens). */
+function jobStarted(job) {
+  DOCK.flash = job.id;
+  setTimeout(() => { if (DOCK.flash === job.id) { DOCK.flash = null; renderDock(); } }, 2500);
+  if (!dockOn() && innerWidth >= 1100) setDock(true);
+  if (!dockOn()) toast(`${job.title}: started — see Activity`);
+  schedule();
+}
+/** Options of a task (security baseline, restart…) as a small inline form. */
+function taskOptionsForm(t, o, { onStart, onCancel, startLabel }) {
+  return h(
+    "div",
+    { class: "task-opts" },
+    t.choices?.asr
+      ? [
+          h("label", { class: "field" }, "Attack surface reduction rules"),
+          h("select", { onchange: (e) => (o.asr = e.target.value) }, Object.entries(t.choices.asr).map(([k, v]) => h("option", { value: k, selected: (o.asr ?? t.options.asr) === k }, v))),
+          h("label", { class: "check", style: { marginTop: "8px" } }, h("input", { type: "checkbox", checked: !!(o.cfa ?? t.options.controlled_folders), onchange: (e) => (o.cfa = e.target.checked) }),
+            h("span", {}, "Controlled folder access (ransomware protection)", h("small", {}, "Can stop ordinary programs from saving into Documents/Desktop until allowed — try one PC first."))),
+        ]
+      : h("div", { class: "grid2" },
+          h("div", {}, h("label", { class: "field" }, "Warning time (minutes)"), h("input", { type: "text", value: String(o.delay ?? t.options.delay_min), oninput: (e) => (o.delay = e.target.value) })),
+          h("div", {}, h("label", { class: "field" }, "Message to the user"), h("input", { type: "text", value: o.message ?? t.options.message ?? "", oninput: (e) => (o.message = e.target.value) }))),
+    h("div", { class: "row", style: { marginTop: "10px" } },
+      h("button", { class: `btn primary${POWER.has(t.id) ? " danger-fill" : ""}`, onclick: onStart }, icon("play", 14), startLabel ?? `Start: ${t.label}`),
+      h("button", { class: "btn ghost", onclick: onCancel }, "Cancel")),
+  );
+}
+/** Tasks for PCs, on the page: one PC → its Maintenance tab, several → Apply. */
+function openTasks({ ids, task } = {}) {
+  const list = ids?.length ? ids : S.selected.size ? [...S.selected] : null;
+  if (list?.length === 1) {
+    S.mtOpen = task ?? null;
+    return openDevice(list[0], "maintenance");
+  }
+  AP.focusTask = task ?? null;
+  openApply(list ?? undefined);
+}
+
 // ------------------------------------------------------------ attention --
 /** What needs a look on a PC, most serious first. */
 function issuesOf(a) {
@@ -740,12 +922,22 @@ function issuesOf(a) {
   else if ((a.speed?.loss ?? 0) >= 2) out.push({ level: 1, icon: "wifi", text: `${a.speed.loss}% packet loss on the internet line` });
   const sec = lastRun(a.id, "Security check");
   if (sec?.state === "failed") out.push({ level: 1, icon: "shield", text: sec.message?.replace(/^Off: /, "Protection off: ") || "Security check found protection off", job: sec.job.id });
+  // A failure in the last day — unless the same action succeeded on this PC
+  // afterwards (a retry, a later run), or the last run of that task did.
+  const lastOk = new Map();
   for (const j of S.jobs.values()) {
     const t = j.targets[a.id];
-    if (t?.state === "failed" && t.finished_at && days(t.finished_at) < 1 && j.title !== "Security check") {
-      out.push({ level: 2, icon: "alert", text: `Failed: ${j.title}`, job: j.id });
-      break;
-    }
+    if (t?.state === "succeeded") lastOk.set(j.title, Math.max(lastOk.get(j.title) ?? 0, Date.parse(t.finished_at ?? j.created_at)));
+  }
+  for (const j of S.jobs.values()) {
+    const t = j.targets[a.id];
+    if (t?.state !== "failed" || !t.finished_at || days(t.finished_at) >= 1 || j.title === "Security check") continue;
+    if ((lastOk.get(j.title) ?? 0) > Date.parse(t.finished_at)) continue;
+    const task = j.kind === "task" ? S.tasks.find((x) => x.label === j.title) : null;
+    const kept = task ? a.task_runs?.[task.id] : null;
+    if (kept?.state === "succeeded" && String(kept.at) > String(t.finished_at)) continue;
+    out.push({ level: 2, icon: "alert", text: `Failed: ${j.title}`, job: j.id });
+    break;
   }
   return out.sort((x, y) => y.level - x.level);
 }
@@ -813,17 +1005,6 @@ function renderDashboard(main) {
         health("Security check passed", secOk, secChecked.length, secChecked.length && secOk < secChecked.length ? "warn" : "ok", () => openTasks({ task: "security_status" })),
         health("Agent up to date", current, agents.length, "violet", () => showComputers("outdated")),
         secChecked.length < agents.length ? h("div", { class: "sub", style: { marginTop: "8px" } }, `${agents.length - secChecked.length} PC(s) never had a security check. `, h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTasks({ task: "security_status" }); } }, "Run it")) : null,
-      ),
-      h(
-        "section",
-        { class: "card dash-activity" },
-        h("div", { class: "card-head" }, h("h3", {}, "Recent activity"), h("span", { class: "spacer" }), h("button", { class: "btn ghost small", onclick: () => go("activity") }, "All activity", icon("chevronRight", 14))),
-        jobs.length
-          ? jobs.slice(0, 7).map((j) => h("button", { class: "act-row", onclick: () => openJob(j.id) },
-              h("span", { class: "grow" }, h("b", {}, j.title), jobResultLine(j), h("span", { class: "sub" }, `${ago(j.created_at)} · ${plural(Object.keys(j.targets).length, "computer")}${j.by ? ` · ${j.by}` : ""}`)),
-              summaryBar(j, false),
-              statePill(overallState(j))))
-          : h("div", { class: "empty-state" }, h("span", { class: "es-ico" }, icon("activity", 28)), h("b", {}, "Nothing yet"), h("span", {}, "Installs, tasks and scripts show up here with a result per computer.")),
       ),
       h(
         "section",
@@ -1443,93 +1624,6 @@ function openInstall({ mode, ids, installerId } = {}) {
 }
 
 // ---- job detail ----
-function openJob(id) {
-  const open = new Set();
-  const closed = new Set();
-  const d = {
-    title: "Result",
-    jobId: id,
-    async render() {
-      const j = S.jobs.get(id);
-      if (!j) return closeDrawer();
-      try {
-        d.detail = (await api("GET", `/api/jobs/${id}`)).job;
-      } catch {}
-      d.paint();
-    },
-    paint() {
-      const j = S.jobs.get(id);
-      if (!j) return;
-      const det = d.detail ?? j;
-      const rows = Object.entries(j.targets).sort(([, a], [, b]) => order(a.state) - order(b.state) || a.hostname.localeCompare(b.hostname));
-      const res = jobResult(j);
-      // Output shown without a click when there is one PC, or for failures.
-      const isOpen = (aid, t) => open.has(aid) || (!closed.has(aid) && (rows.length === 1 || t.state === "failed"));
-      put(d.body,
-        h("div", { class: `result-banner ${res.tone}` },
-          h("span", { class: "rb-ico" }, icon({ ok: "checkCircle", bad: "alert", warn: "clock", running: "activity" }[res.tone] ?? "activity", 26)),
-          h("div", { class: "grow" },
-            h("div", { class: "rb-title" }, res.headline),
-            res.text ? h("div", { class: "rb-text" }, res.text) : null,
-            h("div", { class: "rb-meta" }, j.title, " · ", new Date(j.created_at).toLocaleString(), " · by ", j.by || "—"))),
-        summaryBar(j, true),
-        j.detail ? h("details", { style: { marginTop: "12px" } }, h("summary", { class: "sub" }, "What was sent"), h("pre", { class: "mono script-view" }, j.detail)) : null,
-        det.script ? h("details", { style: { marginTop: "6px" } }, h("summary", { class: "sub" }, "Script that ran"), h("pre", { class: "mono script-view" }, det.script)) : null,
-        h(
-          "div",
-          { class: "card card-pad", style: { marginTop: "14px" } },
-          rows.map(([aid, t]) => {
-            const out = det.targets[aid]?.output;
-            const pr = h("div", { class: "progress" }, h("i", { style: { width: `${Math.round((t.progress ?? 0) * 100)}%` } }));
-            return h(
-              "div",
-              { class: `target t-${t.state}` },
-              h(
-                "div",
-                { class: "head" },
-                h("b", { class: "grow host-link", title: "Open this computer", onclick: () => openDevice(aid) }, t.hostname),
-                h("span", { class: "spacer" }),
-                t.exit_code != null ? h("span", { class: "sub mono" }, `exit ${t.exit_code}`) : null,
-                statePill(t.state),
-              ),
-              t.message ? h("div", { class: "msg" }, t.message) : null,
-              t.steps ? h("ol", { class: "job-steps" }, t.steps.map((st) => h("li", { class: `st-${st.state}` }, h("span", { class: "grow" }, h("b", {}, st.label), st.message ? h("span", { class: "sub" }, ` — ${st.message}`) : null), statePill(st.state)))) : null,
-              t.state === "sending" ? pr : null,
-              out
-                ? h("div", {},
-                    h("button", { class: "btn ghost small", style: { marginTop: "6px" }, onclick: () => {
-                      if (isOpen(aid, t)) { open.delete(aid); closed.add(aid); } else { closed.delete(aid); open.add(aid); }
-                      d.paint();
-                    } }, isOpen(aid, t) ? "Hide full output" : "Show full output"),
-                    isOpen(aid, t) ? h("pre", { class: "out" }, out) : null)
-                : null,
-            );
-          }),
-        ),
-      );
-      const failed = (j.counts.failed ?? 0) + (j.counts.skipped ?? 0) + (j.counts.cancelled ?? 0);
-      const waiting = (j.counts.queued ?? 0) + (j.counts.waiting ?? 0);
-      const active = ["preparing", "sending", "installing", "running"].some((s) => j.counts[s]);
-      put(d.footer, 
-        failed ? h("button", { class: "btn primary", onclick: () => api("POST", `/api/jobs/${id}/retry`).then((r) => toast(`Retrying on ${plural(r.retried, "computer")}`)).catch(fail) }, `Retry ${failed} not done`) : null,
-        waiting ? h("button", { class: "btn", onclick: () => api("POST", `/api/jobs/${id}/cancel`).then((r) => toast(`Cancelled on ${plural(r.cancelled, "computer")}`)).catch(fail) }, `Cancel ${waiting} waiting`) : null,
-        h("span", { class: "spacer" }),
-        !active && !waiting ? h("button", { class: "btn ghost danger", onclick: () => api("DELETE", `/api/jobs/${id}`).then(closeDrawer).catch(fail) }, "Delete from history") : null,
-      );
-    },
-    live() {
-      const j = S.jobs.get(id);
-      if (!j) return;
-      // Fetch outputs again once something finishes.
-      const finished = Object.values(j.targets).filter((t) => t.finished_at).length;
-      if (finished !== d.finished) {
-        d.finished = finished;
-        api("GET", `/api/jobs/${id}`).then((r) => { d.detail = r.job; d.paint(); }).catch(() => {});
-      } else d.paint();
-    },
-  };
-  openDrawer(d);
-}
 const ORDER = ["failed", "sending", "installing", "running", "preparing", "queued", "waiting", "skipped", "cancelled", "succeeded"];
 const order = (s) => ORDER.indexOf(s);
 
@@ -1589,8 +1683,7 @@ async function quickTask(ids, task, options = {}) {
     const { job } = await api("POST", "/api/jobs", { kind: "task", targets: ids, wait_offline: false, payload: { task, options } });
     S.jobs.set(job.id, job);
     watchJob(job);
-    notify({ title: `${job.title}: started`, text: `on ${ids.length === 1 ? S.agents.get(ids[0])?.hostname ?? "1 computer" : plural(ids.length, "computer")} — the result pops up here when it's done`, tone: "running", actionLabel: "Follow", action: () => openJob(job.id), timeout: 5000 });
-    schedule();
+    jobStarted(job);
     return job;
   } catch (e) {
     fail(e);
@@ -1691,6 +1784,10 @@ function openDevice(id, tab = "overview") {
 /** A PC's page, full width: the computer list on the left, the PC on the right. */
 function mountDevice(mainEl, id, startTab = "overview") {
   let tab = startTab;
+  // A task whose options are open in the Maintenance tab (from "Apply baseline…", "Restart…").
+  let mtOpen = S.mtOpen ?? null;
+  S.mtOpen = null;
+  const mtOpts = {};
   let detail = null;
   let shot = null;
   let swQuery = "";
@@ -2029,7 +2126,7 @@ function mountDevice(mainEl, id, startTab = "overview") {
       const withForm = !!t.options;
       return h(
         "div",
-        { class: `set-row mt-row ${s.cls}` },
+        { class: `set-row mt-row ${s.cls}${mtOpen === t.id ? " open" : ""}`, id: `mt-${t.id}` },
         h("span", { class: `mt-mark ${s.cls}` }, icon(s.cls === "done" ? "check" : s.cls === "running" ? "clock" : s.cls ? "alert" : "wrench", 15)),
         h("div", { class: "grow" },
           h("b", {}, t.label),
@@ -2041,8 +2138,14 @@ function mountDevice(mainEl, id, startTab = "overview") {
             class: `btn small${!s.r && !withForm ? " primary" : ""}`,
             disabled: running || (offline && !withForm),
             title: offline && !withForm ? "The PC is offline" : "",
-            onclick: () => (withForm ? openTasks({ ids: [id], task: t.id }) : quickTask([id], t.id)),
+            onclick: () => (withForm ? ((mtOpen = mtOpen === t.id ? null : t.id), d.paint()) : quickTask([id], t.id)),
           }, running ? "Running…" : withForm ? "Run…" : s.r ? "Run again" : "Run")),
+        mtOpen === t.id
+          ? h("div", { class: "mt-form" }, taskOptionsForm(t, (mtOpts[t.id] ??= {}), {
+              onStart: async () => { if (await startTask([id], t, mtOpts[t.id])) { mtOpen = null; d.paint(); } },
+              onCancel: () => { mtOpen = null; d.paint(); },
+            }))
+          : null,
       );
     };
     const done = S.tasks.filter((t) => runState(t.label, t.fail_meaning).cls === "done").length;
@@ -2179,6 +2282,7 @@ function mountDevice(mainEl, id, startTab = "overview") {
     async render() {
       d.paint();
       $(".pcnav-item.active")?.scrollIntoView({ block: "nearest" });
+      if (mtOpen) setTimeout(() => $(`#mt-${mtOpen}`)?.scrollIntoView({ block: "center" }), 50);
       if (tab === "startup" && !su.list && !su.loading) su.load();
       if (tab === "accounts" && !acc.list && !acc.loading) loadAccounts();
       metKey = metricsKey(S.agents.get(id) ?? {});
@@ -2349,7 +2453,8 @@ async function createJob(body) {
     const { job } = await api("POST", "/api/jobs", body);
     S.jobs.set(job.id, job);
     watchJob(job);
-    openJob(job.id);
+    closeDrawer();
+    jobStarted(job);
     return job;
   } catch (e) {
     fail(e);
@@ -2362,112 +2467,6 @@ function targetLine(ids) {
 
 // ---- maintenance tasks ----
 const POWER = new Set(["restart", "shutdown", "cancel_power"]);
-function openTasks({ ids, task } = {}) {
-  const tg = newTargets(ids);
-  const st = { waitOffline: true, open: task ?? null, opts: {} };
-  /** task id → job id of what was started from this panel. */
-  const started = new Map();
-  const optsFor = (t) => (st.opts[t.id] ??= { delay: t.options?.delay_min ?? 5, message: t.options?.message ?? "", asr: t.options?.asr, cfa: !!t.options?.controlled_folders });
-  async function run(t) {
-    const n = targetIds(tg).length;
-    if (!n) return toast("Choose computers first", true);
-    const o = optsFor(t);
-    if ((t.id === "restart" || t.id === "shutdown") && !confirm(`${t.label}: ${plural(n, "computer")} in ${o.delay} min?`)) return;
-    const options = t.choices?.asr ? { asr: o.asr, controlled_folders: !!o.cfa } : t.options ? { delay_min: Number(o.delay) || 0, message: o.message } : {};
-    try {
-      // A restart queued for days would surprise people: power tasks never wait.
-      const { job } = await api("POST", "/api/jobs", { kind: "task", targets: targetParam(tg), wait_offline: st.waitOffline && !POWER.has(t.id), payload: { task: t.id, options } });
-      S.jobs.set(job.id, job);
-      watchJob(job);
-      started.set(t.id, job.id);
-      st.open = null;
-      d.render();
-    } catch (e) {
-      fail(e);
-    }
-  }
-  const statusOf = (t) => {
-    const jid = started.get(t.id);
-    const j = jid && S.jobs.get(jid);
-    return j ? h("button", { class: "task-status", onclick: () => openJob(j.id), title: "Show the result" }, jobResultLine(j), icon("chevronRight", 14)) : null;
-  };
-  const optionsForm = (t) => {
-    const o = optsFor(t);
-    return h(
-      "div",
-      { class: "task-opts" },
-      t.choices?.asr
-        ? [
-            h("label", { class: "field" }, "Attack surface reduction rules"),
-            h("select", { onchange: (e) => (o.asr = e.target.value) }, Object.entries(t.choices.asr).map(([k, v]) => h("option", { value: k, selected: o.asr === k }, v))),
-            h("label", { class: "check", style: { marginTop: "8px" } }, h("input", { type: "checkbox", checked: o.cfa, onchange: (e) => (o.cfa = e.target.checked) }),
-              h("span", {}, "Controlled folder access (ransomware protection)", h("small", {}, "Can stop ordinary programs from saving into Documents/Desktop until allowed — try one PC first."))),
-          ]
-        : h("div", { class: "grid2" },
-            h("div", {}, h("label", { class: "field" }, "Warning time (minutes)"), h("input", { type: "text", value: String(o.delay), oninput: (e) => (o.delay = e.target.value) })),
-            h("div", {}, h("label", { class: "field" }, "Message to the user"), h("input", { type: "text", value: o.message, oninput: (e) => (o.message = e.target.value) }))),
-      h("div", { class: "row", style: { marginTop: "10px" } },
-        h("button", { class: `btn primary${POWER.has(t.id) ? " danger-fill" : ""}`, onclick: () => run(t) }, icon("play", 14), `Start ${t.label.toLowerCase()}`),
-        h("button", { class: "btn ghost", onclick: () => { st.open = null; d.render(); } }, "Cancel")),
-    );
-  };
-  const d = {
-    title: "Maintenance",
-    render() {
-      const n = targetIds(tg).length;
-      const groups = [...new Set(S.tasks.map((x) => x.group))];
-      put(
-        d.body,
-        h("div", { class: "task-targets" },
-          h("div", { class: "step-title" }, icon("monitor", 16), "Run on"),
-          targetPicker(tg, () => d.render()),
-          h("label", { class: "check" }, h("input", { type: "checkbox", checked: st.waitOffline, onchange: (e) => { st.waitOffline = e.target.checked; d.render(); } }), h("span", {}, "Offline computers run it when they connect", h("small", {}, offlineNote(tg, st.waitOffline))))),
-        h("p", { class: "sub", style: { margin: "4px 0 12px" } }, "Click Run: the task starts at once and its result appears in its row. Run as many as you like."),
-        groups.map((g) =>
-          h("section", { class: "task-group" },
-            h("div", { class: "task-gtitle" }, g),
-            S.tasks.filter((x) => x.group === g).map((t) => {
-              const jid = started.get(t.id);
-              const running = jid && !jobResult(S.jobs.get(jid) ?? { targets: {}, counts: {} }).done;
-              return h("div", { class: `task-row${st.open === t.id ? " open" : ""}`, id: `task-${t.id}` },
-                h("div", { class: "task-main" },
-                  h("div", { class: "grow" },
-                    h("b", {}, t.label, t.minutes >= 30 ? h("span", { class: "sub" }, ` · up to ${t.minutes >= 60 ? `${Math.round(t.minutes / 60)} h` : `${t.minutes} min`}`) : null),
-                    h("div", { class: "sub task-help", title: t.help }, t.help),
-                    h("div", { class: "task-status-slot", "data-task": t.id }, statusOf(t))),
-                  h("button", {
-                    class: `btn small${t.options ? "" : " primary"}`,
-                    disabled: !n || running,
-                    title: n ? "" : "Choose computers first",
-                    onclick: () => (t.options ? ((st.open = st.open === t.id ? null : t.id), d.render()) : run(t)),
-                  }, running ? "Running…" : t.options ? "Run…" : jid ? "Run again" : "Run")),
-                st.open === t.id ? optionsForm(t) : null);
-            }))),
-      );
-      put(d.footer, h("span", { class: "sub" }, n ? `Tasks go to ${plural(n, "computer")}.` : "Choose computers above."), h("span", { class: "spacer" }), h("button", { class: "btn", onclick: () => go("activity") }, "Activity"));
-      if (st.open) setTimeout(() => $(`#task-${st.open}`)?.scrollIntoView({ block: "nearest" }), 0);
-    },
-    live() {
-      // Only the result lines change; leave option fields being typed in alone.
-      for (const slot of d.body.querySelectorAll(".task-status-slot")) {
-        const t = S.tasks.find((x) => x.id === slot.dataset.task);
-        if (t && started.has(t.id)) put(slot, statusOf(t));
-      }
-      for (const [tid, jid] of started) {
-        const btn = d.body.querySelector(`#task-${tid} .task-main > .btn`);
-        const t = S.tasks.find((x) => x.id === tid);
-        if (btn && t) {
-          const running = !jobResult(S.jobs.get(jid) ?? { targets: {}, counts: {} }).done;
-          btn.disabled = running || !targetIds(tg).length;
-          btn.textContent = running ? "Running…" : t.options ? "Run…" : "Run again";
-        }
-      }
-      $("#target-seg", d.body)?.replaceWith(targetPicker(tg, () => d.render()));
-    },
-  };
-  openDrawer(d);
-}
-
 // ---- local accounts ----
 /** Form for one account action. `fixed` = { user } when started from a PC's list. */
 function accountForm(st, onChange) {
@@ -2821,6 +2820,7 @@ function renderApply(main, full) {
   apPaintRun();
   apPaintMeasure();
   apLoadFleet();
+  apFocus();
 }
 
 function apPaintLib() {
@@ -2837,7 +2837,15 @@ function apPaintLib() {
       h("button", { class: "chip", title: p.help, onclick: () => { AP.steps = []; p.steps.forEach(apAdd); AP.name = p.label.replace(/ \(.*\)$/, ""); apPaintLib(); apPaintSteps(); apPaintRun(); } }, p.label))),
     groups.map((g) => [
       h("div", { class: "sub ap-group" }, g),
-      S.tasks.filter((t) => t.group === g && t.id !== "cancel_power").map((t) => item(`task:${t.id}`, t.label, null, t.help)),
+      S.tasks.filter((t) => t.group === g && t.id !== "cancel_power").map((t) =>
+        h("div", { class: `ap-item-wrap${AP.focusTask === t.id ? " focus" : ""}`, id: `ap-task-${t.id}` },
+          item(`task:${t.id}`, t.label, null, t.help),
+          // Run at once on the chosen computers (tasks with options go into the list, where they're set).
+          h("button", { class: "icon-btn ap-run-now", title: t.options ? "Add to the list to set its options" : `Run now on the ${plural(AP.ids.size, "chosen computer")}`,
+            onclick: () => {
+              if (t.options) { if (!AP.steps.some((x) => x.key === `task:${t.id}`)) apAdd(`task:${t.id}`); apPaintLib(); apPaintSteps(); apPaintRun(); return; }
+              startTask([...AP.ids].filter((x) => S.agents.has(x)), t, {}, AP.waitOffline);
+            } }, icon(t.options ? "plus" : "play", 14)))),
     ]),
     h("div", { class: "sub ap-group" }, "Saved scripts"),
     S.scripts.length ? S.scripts.map((s) => item(`script:${s.id}`, s.name, null, s.description)) : h("div", { class: "sub" }, "None yet — add them on the Scripts page."),
@@ -2846,6 +2854,12 @@ function apPaintLib() {
   );
 }
 
+function apFocus() {
+  if (!AP.focusTask) return;
+  const el = $(`#ap-task-${AP.focusTask}`);
+  AP.focusTask = null;
+  if (el) setTimeout(() => el.scrollIntoView({ block: "center", behavior: "smooth" }), 50);
+}
 function apPaintSteps() {
   const root = $("#ap-steps");
   if (!root) return;

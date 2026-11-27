@@ -1018,3 +1018,117 @@ td.name-cell { min-width: 230px; }
 .ck-list li.ok .ck-mark { background: var(--ok); color: #fff; }
 .ck-card { margin-bottom: 16px; }
 .ck-rule { margin: 0 0 16px; }
+
+/* =====================================================================
+   Layout pass: activity column, even grids
+   ===================================================================== */
+.shell { --side-w: 248px; --dock-w: 0px; grid-template-columns: var(--side-w) minmax(0, 1fr) var(--dock-w); }
+.shell.collapsed { --side-w: 68px; grid-template-columns: var(--side-w) minmax(0, 1fr) var(--dock-w); }
+.shell.dock-on { --dock-w: 340px; }
+.dock { display: none; position: sticky; top: 0; height: 100vh; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border); min-width: 0; }
+.shell.dock-on .dock { display: flex; }
+.dock-scrim { display: none; }
+.dock-head { display: flex; align-items: center; gap: 8px; height: 60px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--border); flex: none; }
+.dock-head b { font-size: 14.5px; }
+.dock-body { flex: 1; overflow: auto; padding: 6px 10px 16px; }
+.dock-sec { font-size: 11.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); padding: 12px 6px 6px; }
+.dock-empty { padding: 4px 6px 8px; }
+.dock-foot { border-top: 1px solid var(--border); padding: 8px 10px; flex: none; }
+.dock-item { border: 1px solid transparent; border-radius: 10px; margin-bottom: 4px; transition: background .2s, border-color .2s; }
+.dock-item:hover { background: var(--surface-2); }
+.dock-item.open { background: var(--surface-2); border-color: var(--border); }
+.dock-item.flash { animation: flash 1.2s ease-out 2; }
+@keyframes flash { 0%, 100% { background: transparent; } 40% { background: var(--accent-soft); } }
+.dock-row { display: flex; align-items: flex-start; gap: 10px; width: 100%; border: 0; background: none; padding: 9px 8px; text-align: left; cursor: pointer; color: var(--text); }
+.dock-row .grow { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.dock-row b { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dock-res { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dock-item.ok .dock-res, .dock-item.ok .dock-ico { color: var(--ok); }
+.dock-item.bad .dock-res, .dock-item.bad .dock-ico { color: var(--bad); }
+.dock-item.warn .dock-res, .dock-item.warn .dock-ico { color: var(--warn); }
+.dock-item.running .dock-res, .dock-item.running .dock-ico { color: var(--accent); }
+.dock-item.running .dock-ico .ico { animation: spin 2.4s linear infinite; }
+.dock-ico { display: inline-flex; margin-top: 2px; flex: none; }
+.dock-item .bar { width: auto; margin: 0 10px 10px 34px; }
+.dock-detail { padding: 0 10px 10px 34px; display: grid; gap: 6px; }
+.dock-target { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.dock-target .row { gap: 6px; }
+.dock-target .msg { font-size: 12.5px; margin-top: 3px; overflow-wrap: anywhere; }
+.dock-target.t-failed .msg { color: var(--bad); }
+.dock-target.t-succeeded .msg { color: var(--ok); }
+.dock-target pre.out, .dock-sent pre.out { margin: 6px 0 0; max-height: 260px; overflow: auto; font-size: 11.5px; white-space: pre-wrap; word-break: break-word; background: var(--surface-2); border-radius: 6px; padding: 8px; border: 1px solid var(--border); }
+.dock-target .job-steps { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+.dock-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.dock-actions:empty { display: none; }
+.linkish { border: 0; background: none; padding: 4px 0 0; color: var(--accent); font-weight: 600; font-size: 12.5px; cursor: pointer; }
+.linkish:hover { text-decoration: underline; }
+.run-pill.idle { color: var(--text-dim); }
+.run-pill.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--accent-strong); }
+.content .selbar, .shell.collapsed .content .selbar { left: var(--side-w); right: var(--dock-w); max-width: calc(100vw - var(--side-w) - var(--dock-w) - 32px); }
+
+/* the PC page's list stays put while the activity column is open */
+.pc-page .pcnav { top: 60px; }
+
+/* narrower screens: the column slides over the page */
+@media (max-width: 1180px) {
+  .shell.dock-on { --dock-w: 0px; }
+  .shell.dock-on .dock { position: fixed; right: 0; top: 0; bottom: 0; width: min(380px, 100vw); z-index: 45; box-shadow: var(--shadow-lg); }
+  .shell.dock-on .dock-scrim { display: block; position: fixed; inset: 0; background: rgba(9, 13, 22, .3); z-index: 44; }
+}
+@media (max-width: 900px) {
+  .shell, .shell.collapsed, .shell.dock-on { --side-w: 0px; grid-template-columns: 1fr; }
+}
+
+/* ---- even grids: equal columns, equal heights ---- */
+.dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+.dash-quick { grid-column: 1 / -1; }
+.dash-quick .quick-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.pc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+.pc-grid > .pc-card { display: flex; flex-direction: column; }
+.set-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+.set-grid > .set-card { display: flex; flex-direction: column; }
+.kpis { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.kpi { min-width: 0; }
+.kpi-value { font-size: 23px; }
+@media (max-width: 1250px) {
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dash-quick .quick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 1000px) {
+  .pc-grid, .set-grid, .dash-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .kpis { grid-template-columns: 1fr 1fr; }
+  .dash-quick .quick-grid { grid-template-columns: 1fr; }
+}
+
+/* inline task options (Maintenance tab, Apply) */
+.mt-row.open { background: var(--accent-soft); }
+.mt-row .task-opts { margin-top: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px 12px; }
+.ap-item-wrap { display: flex; align-items: center; gap: 2px; border-radius: 8px; }
+.ap-item-wrap .ap-item { flex: 1; min-width: 0; }
+.ap-item-wrap.focus { box-shadow: var(--ring); animation: flash 1.2s ease-out 2; }
+.ap-run-now { width: 28px; height: 28px; flex: none; color: var(--accent); }
+.ap-run-now:hover { background: var(--accent-soft); color: var(--accent-strong); }
+.kpi { padding: 14px 16px; gap: 12px; }
+.kpi-ico { width: 36px; height: 36px; }
+.kpi-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.apply { align-items: stretch; }
+.apply > .card { display: flex; flex-direction: column; }
+.ap-lib #ap-lib, .ap-pc-list { max-height: 56vh; }
+/* grids follow the space they actually get (activity column open or not) */
+.pc-main, main { container-type: inline-size; }
+@container (max-width: 900px) {
+  .set-grid, .pc-grid, .dash-grid { grid-template-columns: 1fr; }
+}
+@container (max-width: 1000px) {
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.pc-page .pc-layout { grid-template-columns: 220px minmax(0, 1fr); }
+.mt-row { flex-wrap: wrap; }
+.mt-row .mt-form { flex-basis: 100%; padding-left: 40px; }
+.mt-row .grow { flex: 1 1 200px; }
+@container (min-width: 720px) and (max-width: 900px) {
+  .pc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.hdr-title { white-space: nowrap; overflow: hidden; flex-shrink: 1; } .hdr-title b { overflow: hidden; text-overflow: ellipsis; }

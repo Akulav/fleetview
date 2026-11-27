@@ -78,6 +78,19 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   baseline, adblocker, Windows Update check/install/repair, clean-up, snapshot and speed test, screenshot,
   message, PowerShell, saved scripts, restart/shut down/cancel, agent version/update/settings/refresh, and
   removing it from the list.
+- **Stay on the page:** an **Activity column** on the right of every page shows what is running (with
+  progress) and the latest results; a job expands in place with each PC's result, its output, Retry and
+  Cancel. Starting something no longer opens a panel or pops a notification — it appears at the top of the
+  column (which slides over the page on narrow screens; a notification only when the column is hidden). The
+  Maintenance panel is gone: one PC → its Maintenance tab, where tasks with options (security baseline,
+  restart…) open them inside their own row; several PCs → Apply changes, where every task has a ▶ to run it
+  at once.
+- **Even layout:** equal columns and card heights on Home, the PC page and its tabs, Apply changes; grids
+  follow the space they actually get (one column when the activity column makes the page narrow). Home's
+  recent-activity card moved into the Activity column.
+- **No stale "Failed" badges:** a failure no longer flags a PC once the same action succeeded there
+  afterwards, and an uninstall that reports an error but whose program is gone from the PC's program list is
+  recorded as uninstalled.
 - **Clean checklist, and automatic "cleaned":** a PC is marked cleaned by itself (by *auto*) the moment all of
   these hold: security baseline applied, a security check done, adblocker installed (and not removed since),
   Windows Update repaired, checked and installed, the clean-up run, and exactly two accounts besides Windows'

@@ -556,6 +556,18 @@ export class JobEngine extends EventEmitter {
       const r = await result;
       const output = clip([r.stdout, r.stderr && `[stderr]\n${r.stderr}`].filter(Boolean).join("\n"));
       if (job.kind === "uninstall" && r.success) this.hub.send(agentId, "RequestSoftware");
+      if (job.kind === "uninstall" && !r.success) {
+        // Some uninstallers report an error and remove the program anyway:
+        // what the PC's program list says decides.
+        t.message = "checking whether it is still installed…";
+        this.save(job);
+        const fresh = await this.refreshSoftware(agentId);
+        const name = String(job.payload.name ?? "").toLowerCase();
+        const still = (this.hub.get(agentId)?.software ?? []).some((s) => s.name.toLowerCase() === name);
+        if (fresh && !still) {
+          return this.finish(job, t, "succeeded", `uninstalled — ${job.payload.name} is gone from the program list (the uninstaller itself reported exit ${r.exit_code})`, { exit_code: r.exit_code, output });
+        }
+      }
       if (r.success) this.afterSuccess(job, agentId);
       if (job.kind === "task") this.record(job.payload.task, agentId, r);
       this.finish(job, t, r.success ? "succeeded" : "failed", summarize(job, r), { exit_code: r.exit_code, output });
