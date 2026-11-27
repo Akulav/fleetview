@@ -71,7 +71,13 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
 - **Search everything with Ctrl+K** (or `/`): computers, pages and actions, from anywhere.
 - **Computers** is a sortable grid (click a column) with a status column, issue badges, a *Needs attention*
   filter, a tag filter, and a tidier selection bar (main actions plus *More*).
-- **PC page** has a header with the PC's status, user, IP and Windows, four main actions and a *More* menu.
+- **PC page** is a full page with its own address (`#/pc/<id>/<tab>`, so Back and bookmarks work) instead of a
+  panel: the computer list on the left (↑/↓ to switch), a header with the PC's status, user, IP and Windows,
+  four main actions and a *More* menu, and tabs Overview, Programs, Startup apps, Accounts, History and a new
+  **Settings** tab with everything for that PC: name, tags and notes (edited in place), cleaned mark, security
+  baseline, adblocker, Windows Update check/install/repair, clean-up, snapshot and speed test, screenshot,
+  message, PowerShell, saved scripts, restart/shut down/cancel, agent version/update/settings/refresh, and
+  removing it from the list.
 - New colours, type and icons (drawn in the app, no external files; the CSP is unchanged), light and dark.
 - **Sign-in** page redesigned.
 

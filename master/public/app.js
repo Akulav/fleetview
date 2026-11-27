@@ -321,14 +321,20 @@ const VIEWS = {
   vault: { label: "Passwords", icon: "key", section: "Security" },
   settings: { label: "Settings", icon: "settings", section: "Admin" },
 };
+/** The page in the address: #/computers, or #/pc/<id>/<tab> for one PC. */
 function viewFromHash() {
-  const v = location.hash.replace(/^#\/?/, "").split(/[/?]/)[0];
-  return VIEWS[v] ? v : "dashboard";
+  const parts = location.hash.replace(/^#\/?/, "").split("/");
+  if (parts[0] === "pc" && parts[1]) {
+    S.pcId = decodeURIComponent(parts[1]);
+    S.pcTab = parts[2] || "overview";
+    return "pc";
+  }
+  return VIEWS[parts[0]] ? parts[0] : "dashboard";
 }
 window.addEventListener("hashchange", () => {
   if (!S.user) return;
   const v = viewFromHash();
-  if (v === S.view) return;
+  if (v === S.view && v !== "pc") return;
   S.view = v;
   closeDrawer();
   renderTabs();
@@ -390,7 +396,7 @@ function renderTabs() {
     const c = counts[id];
     return h(
       "a",
-      { href: `#/${id}`, class: `nav-item${S.view === id ? " active" : ""}`, title: v.label, onclick: (e) => { e.preventDefault(); go(id); } },
+      { href: `#/${id}`, class: `nav-item${S.view === id || (id === "computers" && S.view === "pc") ? " active" : ""}`, title: v.label, onclick: (e) => { e.preventDefault(); go(id); } },
       icon(v.icon, 18),
       h("span", { class: "nav-label" }, v.label),
       c ? h("span", { class: `nav-count ${c.cls}`, title: c.title }, c.n) : null,
@@ -444,10 +450,16 @@ function renderTabs() {
     ),
   );
   const title = $("#hdr-title");
-  if (title) put(title, h("span", { class: "crumb-root" }, "FleetView"), icon("chevronRight", 14), h("b", {}, VIEWS[S.view]?.label ?? ""));
+  const pcName = S.view === "pc" ? S.agents.get(S.pcId)?.hostname ?? "Computer" : null;
+  if (title) {
+    put(title, h("span", { class: "crumb-root" }, "FleetView"), icon("chevronRight", 14),
+      pcName
+        ? [h("a", { href: "#/computers", class: "crumb-link", onclick: (e) => { e.preventDefault(); go("computers"); } }, "Computers"), icon("chevronRight", 14), h("b", {}, pcName)]
+        : h("b", {}, VIEWS[S.view]?.label ?? ""));
+  }
   const run = $("#hdr-running");
   if (run) put(run, running ? h("button", { class: "run-pill", onclick: () => go("activity"), title: "Actions in progress" }, h("span", { class: "pulse" }), `${running} running`) : null);
-  document.title = `${VIEWS[S.view]?.label ?? "FleetView"} · FleetView`;
+  document.title = `${pcName ?? VIEWS[S.view]?.label ?? "FleetView"} · FleetView`;
 }
 
 function go(view) {
@@ -465,6 +477,11 @@ function renderMain(full = false) {
   const main = $("#main");
   if (!main) return;
   if (S.view !== "vault") main.dataset.view = S.view;
+  if (S.view !== "pc") S.page = null;
+  if (S.view === "pc") {
+    if (full || !S.page || S.page.id !== S.pcId) return mountDevice(main, S.pcId, S.pcTab);
+    return S.page.live();
+  }
   if (S.view === "dashboard") return renderDashboard(main);
   if (S.view === "computers") return renderComputers(main, full);
   if (S.view === "activity") return renderActivity(main);
@@ -917,7 +934,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && S.drawer) return closeDrawer();
   // Drawer shortcuts (moving between PCs), never while typing.
   const typing = e.target.closest?.("input, textarea, select, [contenteditable]");
-  if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey && S.drawer?.onKey?.(e)) e.preventDefault();
+  const target = S.drawer ?? (S.view === "pc" ? S.page : null);
+  if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey && target?.onKey?.(e)) e.preventDefault();
 });
 
 // ---- shared: which computers an action goes to ----
@@ -1408,7 +1426,21 @@ function sparkChart(hours, days = 7) {
   );
 }
 
-function openDevice(id, startTab = "overview") {
+/** Go to a PC's page (#/pc/<id>/<tab>). */
+function openDevice(id, tab = "overview") {
+  closeDrawer();
+  const path = `#/pc/${encodeURIComponent(id)}${tab && tab !== "overview" ? `/${tab}` : ""}`;
+  if (location.hash !== path) history.pushState(null, "", path);
+  S.view = "pc";
+  S.pcId = id;
+  S.pcTab = tab;
+  renderTabs();
+  renderMain(true);
+  window.scrollTo(0, 0);
+}
+
+/** A PC's page, full width: the computer list on the left, the PC on the right. */
+function mountDevice(mainEl, id, startTab = "overview") {
   let tab = startTab;
   let detail = null;
   let shot = null;
@@ -1690,13 +1722,123 @@ function openDevice(id, startTab = "overview") {
     return [
       h("div", { class: "pc-grid" }, status, perf, cleaning, internet, security, recent),
       shot ? h("img", { class: "shot", src: shot, alt: "screenshot" }) : null,
-      !a.online ? h("div", { style: { marginTop: "16px" } }, h("button", { class: "btn danger", onclick: () => confirm(`Remove ${a.hostname} from the list? It reappears if its agent connects again.`) && api("DELETE", `/api/agents/${id}`).then(closeDrawer).catch(fail) }, "Remove from list")) : null,
+      !a.online ? h("div", { style: { marginTop: "16px" } }, h("button", { class: "btn danger", onclick: () => confirm(`Remove ${a.hostname} from the list? It reappears if its agent connects again.`) && api("DELETE", `/api/agents/${id}`).then(() => go("computers")).catch(fail) }, "Remove from list")) : null,
     ];
   }
 
   const go2 = (nid) => {
-    if (nid && nid !== id) openDevice(nid, tab === "accounts" || tab === "startup" ? "overview" : tab);
+    if (nid && nid !== id) openDevice(nid, tab);
   };
+  const lastText = (label) => {
+    const r = lastRun(id, label);
+    return r ? `${STATE_LABEL[r.state]?.[0] ?? r.state} ${ago(r.at)}${r.message ? ` — ${r.message}` : ""}` : "Never run on this PC";
+  };
+  /** Everything that can be set or done for this one PC, in one place. */
+  function settingsTab(a) {
+    const section = (title, desc, ...body) =>
+      h("section", { class: "card set-card" }, h("div", { class: "set-head" }, h("h3", {}, title), desc ? h("p", { class: "sub" }, desc) : null), ...body);
+    const row = (label, value, ...btns) =>
+      h("div", { class: "set-row" }, h("div", { class: "grow" }, h("b", {}, label), value ? h("div", { class: "sub" }, value) : null), h("div", { class: "set-btns" }, ...btns));
+    const btn = (label, fn, opts = {}) => h("button", { class: `btn small${opts.primary ? " primary" : ""}${opts.danger ? " danger" : ""}`, disabled: !!opts.disabled, title: opts.title ?? "", onclick: fn }, opts.icon ? icon(opts.icon, 14) : null, label);
+    const saveTags = (tags) => {
+      const list = [...new Set(tags)];
+      return api("PATCH", `/api/agents/${id}`, { tags: list })
+        .then(() => {
+          const cur = S.agents.get(id);
+          if (cur) cur.tags = list;
+          d.paint();
+          $(".pc-page .tag-input")?.focus();
+        })
+        .catch(fail);
+    };
+    const tagInput = h("input", {
+      type: "text",
+      class: "tag-input",
+      placeholder: "Add a tag, press Enter",
+      onkeydown: (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const add = e.target.value.split(",").map((x) => x.trim()).filter(Boolean);
+        if (add.length) saveTags([...(a.tags ?? []), ...add]);
+      },
+    });
+    const notes = h("textarea", { class: "notes-input", rows: 3, placeholder: "Anything worth knowing: where it is, who uses it, warranty, quirks…", value: a.notes ?? "" });
+    const offline = !a.online;
+    const offTip = offline ? "The PC is offline" : "";
+    return h(
+      "div",
+      { class: "set-grid" },
+      section(
+        "General",
+        "Name, tags and notes for this computer.",
+        row("Computer name", a.pending_name ? `${a.hostname} → ${a.pending_name} after a restart` : a.hostname, btn("Rename…", () => openRename([id]), { icon: "edit" })),
+        h("div", { class: "set-row col" },
+          h("b", {}, "Tags"),
+          h("div", { class: "sub" }, "Group PCs (office, department…) to filter and select them together."),
+          h("div", { class: "tag-edit" }, (a.tags ?? []).map((t) => h("span", { class: "tag removable" }, t, h("button", { title: `Remove ${t}`, onclick: () => saveTags(a.tags.filter((x) => x !== t)) }, icon("x", 12)))), tagInput)),
+        h("div", { class: "set-row col" },
+          h("b", {}, "Notes"),
+          notes,
+          h("div", {}, btn("Save notes", () => api("PATCH", `/api/agents/${id}`, { notes: notes.value }).then(() => toast("Notes saved")).catch(fail)))),
+      ),
+      section(
+        "Maintenance",
+        "The state of this PC and the usual fixes.",
+        row("Cleaned", a.cleaned ? `${new Date(a.cleaned.at).toLocaleString()} by ${a.cleaned.by || "—"}${a.cleaned.note ? ` — ${a.cleaned.note}` : ""}` : "Not marked as cleaned yet",
+          a.cleaned ? btn("Clear mark", () => confirm(`Remove the cleaned mark from ${a.hostname}?`) && setCleaned([id], false)) : null,
+          btn(a.cleaned ? "Mark again" : "Mark as cleaned", () => { const note = prompt("Note (optional), e.g. removed bloat, new SSD", ""); if (note !== null) setCleaned([id], true, note); }, { primary: !a.cleaned, icon: "sparkles" })),
+        row("Security baseline", lastText("Security baseline (turn on all protection)"),
+          btn("Check", () => quickTask([id], "security_status"), { disabled: offline, title: offTip }),
+          btn("Apply…", () => openTasks({ ids: [id], task: "security_baseline" }), { icon: "shield" })),
+        row("Adblocker", lastText("Install adblocker in all browsers"),
+          btn("Install", () => quickTask([id], "adblock"), { disabled: offline, title: offTip }),
+          btn("Remove", () => quickTask([id], "adblock_remove"), { disabled: offline, title: offTip })),
+        row("Windows Update", lastText("Check for Windows updates"),
+          btn("Check", () => quickTask([id], "check_updates"), { disabled: offline, title: offTip }),
+          btn("Install", () => quickTask([id], "install_updates"), { disabled: offline, title: offTip }),
+          btn("Repair", () => quickTask([id], "repair_updates"), { disabled: offline, title: offTip })),
+        row("Clean-up", lastText("Clean up temporary files"),
+          btn("Temp files", () => quickTask([id], "cleanup"), { disabled: offline, title: offTip }),
+          btn("Startup apps", () => { tab = "startup"; history.replaceState(null, "", `#/pc/${encodeURIComponent(id)}/startup`); if (!su.list && !su.loading) su.load(); d.paint(); })),
+        row("Performance", "A 30-second snapshot and an internet speed test",
+          btn("Snapshot", () => quickTask([id], "perf_snapshot"), { disabled: offline, title: offTip }),
+          btn("Speed test", () => quickTask([id], "speed_test"), { disabled: offline, title: offTip })),
+        row("More maintenance", "sfc, DISM, Defender scan, disk health, group policy, DNS…", btn("Maintenance…", () => openTasks({ ids: [id] }), { icon: "wrench" })),
+      ),
+      section(
+        "Remote",
+        "Reach the PC and its user.",
+        row("Screenshot", "The signed-in user is notified", btn("Take", takeShot, { disabled: offline, title: offTip, icon: "camera" })),
+        row("Message", "Show a message on the user's screen", btn("Send…", () => openMessage([id]), { icon: "message" })),
+        row("PowerShell", "Run a command as SYSTEM", btn("Open…", () => openScript([id]), { icon: "terminal" })),
+        row("Saved script", "Run one of the scripts from the Scripts page", btn("Run…", () => openRunScript({ ids: [id] }), { icon: "play" })),
+        row("Install software", "Push an .exe or .msi silently", btn("Install…", () => openInstall({ ids: [id] }), { icon: "download" })),
+        row("Local accounts", "Users, passwords, administrators", btn("Open", () => { tab = "accounts"; history.replaceState(null, "", `#/pc/${encodeURIComponent(id)}/accounts`); if (!acc.list && !acc.loading) loadAccounts(); d.paint(); }, { icon: "users" })),
+      ),
+      section(
+        "Power",
+        "The signed-in user gets a warning first.",
+        row("Restart", "With a warning and a delay you choose", btn("Restart…", () => openTasks({ ids: [id], task: "restart" }), { icon: "refresh" })),
+        row("Shut down", "With a warning and a delay you choose", btn("Shut down…", () => openTasks({ ids: [id], task: "shutdown" }), { icon: "power" })),
+        row("Cancel", "Cancel a restart or shutdown that is counting down", btn("Cancel", () => quickTask([id], "cancel_power"), { disabled: offline, title: offTip })),
+      ),
+      section(
+        "Agent",
+        "The FleetView agent on this PC.",
+        row("Version", `${a.agent_version || "—"}${a.outdated ? " — an update is available" : " — up to date"}`, a.outdated ? btn("Update agent", () => createJob({ kind: "update", targets: [id], wait_offline: true, payload: {} }), { primary: true }) : null),
+        row("MoldSign bridge", emgText(a.emanagement)),
+        row("Agent settings", "Master address, e-Management URL, report interval", btn("Edit…", () => openAgentSettings([id]), { icon: "settings" })),
+        row("Refresh data", "Ask the PC for fresh hardware and program lists now", btn("Refresh", () => api("POST", `/api/agents/${id}/refresh`).then(() => { toast("Asked the PC for fresh data"); setTimeout(() => d.render(), 1500); }).catch(fail), { disabled: offline, title: offTip, icon: "refresh" })),
+        row("Identity", `id ${id} · first seen ${a.first_seen ? new Date(a.first_seen).toLocaleDateString() : "—"} · last seen ${a.online ? "now" : ago(a.last_seen)}`),
+      ),
+      section(
+        "Danger zone",
+        null,
+        row("Remove from the list", a.online ? "Only offline PCs can be removed (it comes back if its agent connects)." : "It comes back if its agent connects again.",
+          btn("Remove", () => confirm(`Remove ${a.hostname} from the list? It reappears if its agent connects again.`) && api("DELETE", `/api/agents/${id}`).then(() => go("computers")).catch(fail), { danger: true, disabled: a.online, icon: "trash" })),
+      ),
+    );
+  }
   const step = (dir) => {
     const list = navList();
     const i = list.findIndex((x) => x.id === id);
@@ -1704,12 +1846,7 @@ function openDevice(id, startTab = "overview") {
     if (n) go2(n.id);
   };
   const d = {
-    title: "Computer",
-    wide: true,
-    headTools: () => [
-      h("button", { class: "btn ghost small", title: "Previous computer (↑ or K)", onclick: () => step(-1) }, "◀"),
-      h("button", { class: "btn ghost small", title: "Next computer (↓ or J)", onclick: () => step(1) }, "▶"),
-    ],
+    id,
     onKey(e) {
       if (e.key === "ArrowDown" || e.key === "j") step(1);
       else if (e.key === "ArrowUp" || e.key === "k") step(-1);
@@ -1732,9 +1869,17 @@ function openDevice(id, startTab = "overview") {
     },
     paint() {
       const a = S.agents.get(id);
-      if (!a) return closeDrawer();
-      const titles = { overview: "Overview", software: `Programs (${detail?.software?.length ?? a.software_count})`, startup: "Startup", accounts: "Accounts", history: "History" };
-      const sub = h("div", { class: "subtabs" }, Object.keys(titles).map((k) => h("button", { class: tab === k ? "active" : "", onclick: () => { tab = k; if (k === "accounts" && !acc.list && !acc.loading) loadAccounts(); if (k === "startup" && !su.list && !su.loading) su.load(); d.paint(); } }, titles[k])));
+      if (!a) return go("computers");
+      const titles = { overview: "Overview", software: `Programs (${detail?.software?.length ?? a.software_count})`, startup: "Startup apps", accounts: "Accounts", history: "History", settings: "Settings" };
+      const tabIcons = { overview: "home", software: "package", startup: "zap", accounts: "users", history: "activity", settings: "settings" };
+      const sub = h("div", { class: "subtabs pc-tabs" }, Object.keys(titles).map((k) => h("button", { class: tab === k ? "active" : "", onclick: () => {
+        tab = k;
+        S.pcTab = k;
+        history.replaceState(null, "", `#/pc/${encodeURIComponent(id)}${k === "overview" ? "" : `/${k}`}`);
+        if (k === "accounts" && !acc.list && !acc.loading) loadAccounts();
+        if (k === "startup" && !su.list && !su.loading) su.load();
+        d.paint();
+      } }, icon(tabIcons[k], 15), titles[k])));
       const menuItem = (ic, label, fn, disabled = false) => h("button", { class: "menu-item", disabled, onclick: (e) => { e.target.closest("details").open = false; fn(); } }, icon(ic, 16), label);
       const actions = h(
         "div",
@@ -1753,6 +1898,9 @@ function openDevice(id, startTab = "overview") {
         h(
           "div",
           { class: "pc-hero-actions" },
+          h("div", { class: "pc-step" },
+            h("button", { class: "icon-btn", title: "Previous computer (↑ or K)", onclick: () => step(-1) }, icon("chevronLeft", 18)),
+            h("button", { class: "icon-btn", title: "Next computer (↓ or J)", onclick: () => step(1) }, icon("chevronRight", 18))),
           h("button", { class: "btn primary", onclick: () => openApply([id]) }, icon("layers", 16), "Apply changes"),
           h("button", { class: "btn", onclick: () => openInstall({ ids: [id] }) }, icon("download", 16), "Install"),
           h("button", { class: "btn", onclick: () => openTasks({ ids: [id] }) }, icon("wrench", 16), "Maintenance"),
@@ -1765,12 +1913,15 @@ function openDevice(id, startTab = "overview") {
               menuItem("camera", "Screenshot", takeShot, !a.online),
               menuItem("message", "Message the user", () => openMessage([id])),
               menuItem("settings", "Agent settings", () => openAgentSettings([id])),
-              menuItem("refresh", "Refresh data", () => api("POST", `/api/agents/${id}/refresh`).then(() => setTimeout(() => d.render(), 1500)).catch(fail), !a.online))),
+              menuItem("refresh", "Refresh data", () => api("POST", `/api/agents/${id}/refresh`).then(() => setTimeout(() => d.render(), 1500)).catch(fail), !a.online),
+              menuItem("settings", "All settings for this PC", () => { tab = "settings"; history.replaceState(null, "", `#/pc/${encodeURIComponent(id)}/settings`); d.paint(); }))),
         ),
       );
       let content;
       if (tab === "overview") {
         content = overview(a);
+      } else if (tab === "settings") {
+        content = settingsTab(a);
       } else if (tab === "accounts") {
         content = accountsTab(a);
       } else if (tab === "startup") {
@@ -1778,7 +1929,7 @@ function openDevice(id, startTab = "overview") {
       } else if (tab === "software") {
         const list = (detail?.software ?? []).filter((s) => !swQuery || s.name.toLowerCase().includes(swQuery.toLowerCase())).sort((x, y) => x.name.localeCompare(y.name));
         content = [
-          h("input", { type: "search", class: "sw-search", placeholder: "Search programs…", value: swQuery, oninput: (e) => { swQuery = e.target.value; const pos = e.target.selectionStart; d.paint(); const i = $(".drawer .sw-search"); i?.focus(); i?.setSelectionRange(pos, pos); } }),
+          h("input", { type: "search", class: "sw-search", placeholder: "Search programs…", value: swQuery, oninput: (e) => { swQuery = e.target.value; const pos = e.target.selectionStart; d.paint(); const i = $(".pc-page .sw-search"); i?.focus(); i?.setSelectionRange(pos, pos); } }),
           detail?.software_at ? h("div", { class: "sub", style: { margin: "6px 0" } }, `List from ${ago(detail.software_at)}`) : null,
           list.map((s) =>
             h(
@@ -1797,19 +1948,21 @@ function openDevice(id, startTab = "overview") {
           ? h("div", { class: "card" }, js.map((j) => h("div", { class: "job", onclick: () => openJob(j.id) }, h("div", { class: "grow" }, h("div", { class: "title" }, j.title), h("div", { class: "sub" }, `${ago(j.created_at)} · ${j.targets[id].message || ""}`)), statePill(j.targets[id].state))))
           : h("div", { class: "empty" }, "Nothing done on this computer yet.");
       }
-      const scroll = $(".pc-main")?.scrollTop ?? 0;
+      if (S.page !== d) return; // left this PC meanwhile
       const navScroll = $(".pcnav-list")?.scrollTop ?? null;
       const navFocus = document.activeElement?.classList.contains("nav-search");
-      const main = h("div", { class: "pc-main" }, actions, sub, ...[content].flat());
-      put(d.body, h("div", { class: "pc-layout" }, pcNav(id, go2), main));
-      main.scrollTop = scroll;
+      const y = window.scrollY;
+      const main = h("div", { class: "pc-main" }, actions, sub, h("div", { class: `pc-tab-body tab-${tab}` }, ...[content].flat()));
+      const nav = pcNav(id, go2);
+      nav.append(h("div", { class: "pcnav-foot sub" }, h("kbd", {}, "↑"), h("kbd", {}, "↓"), " switch computers"));
+      put(d.body, h("div", { class: "pc-layout" }, nav, main));
+      window.scrollTo(0, y);
       if (navScroll !== null) $(".pcnav-list").scrollTop = navScroll;
       if (navFocus) {
         const i = $(".nav-search");
         i?.focus();
         i?.setSelectionRange(i.value.length, i.value.length);
       }
-      put(d.footer, h("span", { class: "sub" }, `${a.hostname} · id ${id}`), h("span", { class: "spacer" }), h("span", { class: "sub hide-sm" }, "↑ ↓ to switch computers · Esc to close"));
     },
     live() {
       const a = S.agents.get(id);
@@ -1820,8 +1973,8 @@ function openDevice(id, startTab = "overview") {
           loadMetrics();
         }
       }
-      // Don't repaint under the user's typing (search boxes, account form).
-      const typing = document.activeElement?.matches?.(".drawer input, .drawer textarea");
+      // Don't repaint under the user's typing (search boxes, notes, account form).
+      const typing = document.activeElement?.matches?.(".pc-page input, .pc-page textarea, .pc-page select");
       if (settleToggles() || (!typing && tab !== "software" && !(tab === "accounts" && acc.form))) d.paint();
     },
   };
@@ -1837,7 +1990,10 @@ function openDevice(id, startTab = "overview") {
       fail(e);
     }
   }
-  openDrawer(d);
+  d.body = h("div", { class: "pc-page" });
+  put(mainEl, d.body);
+  S.page = d;
+  d.render();
 }
 
 async function createJob(body) {

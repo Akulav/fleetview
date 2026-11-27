@@ -841,3 +841,49 @@ table.grid td, table.grid th { padding-left: 12px; padding-right: 12px; }
   td.cb, th.cb { width: 32px; }
   .pc-meta { max-width: 150px; }
 }
+
+/* ---- PC page (full width, its own address) ---- */
+main[data-view="pc"] { max-width: none; padding: 0; }
+.pc-page .pc-layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: calc(100vh - 60px); }
+.pc-page .pcnav { position: sticky; top: 60px; height: calc(100vh - 60px); border-right: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; }
+.pc-page .pcnav-list { flex: 1; overflow: auto; }
+.pcnav-foot { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 4px; }
+.pc-page .pc-main { overflow: visible; padding: 6px 32px 80px; max-width: 1500px; width: 100%; }
+.pc-page .pc-hero { padding: 22px 0 10px; }
+.pc-step { display: flex; gap: 2px; margin-right: 4px; }
+.pc-tabs { position: sticky; top: 60px; z-index: 10; background: var(--bg); margin: 6px 0 18px; }
+.pc-tabs button { display: inline-flex; align-items: center; gap: 7px; }
+.pc-tabs button .ico { opacity: .75; }
+.pc-tabs button.active .ico { opacity: 1; }
+.pc-tab-body.tab-software, .pc-tab-body.tab-accounts, .pc-tab-body.tab-startup, .pc-tab-body.tab-history { max-width: 1100px; }
+.crumb-link { color: var(--text-faint); }
+.crumb-link:hover { color: var(--text); }
+
+/* settings tab */
+.set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 16px; align-items: start; }
+.set-card { padding: 18px 20px 8px; }
+.set-head h3 { margin: 0; }
+.set-head p { margin: 3px 0 8px; }
+.set-row { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-top: 1px solid var(--border); }
+.set-head + .set-row { border-top: 0; }
+.set-row .grow { flex: 1; min-width: 0; }
+.set-row .grow b { font-weight: 600; }
+.set-row .grow .sub { overflow-wrap: anywhere; }
+.set-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.set-row.col { flex-direction: column; align-items: stretch; gap: 6px; }
+.tag-edit { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface); }
+.tag.removable { display: inline-flex; align-items: center; gap: 4px; padding-right: 3px; }
+.tag.removable button { border: 0; background: none; cursor: pointer; color: var(--text-faint); display: inline-grid; place-items: center; padding: 1px; border-radius: 4px; }
+.tag.removable button:hover { color: var(--bad); background: var(--bad-soft); }
+.tag-input { flex: 1; min-width: 160px; border: 0 !important; box-shadow: none !important; padding: 4px 6px !important; }
+.notes-input { min-height: 80px; }
+@media (max-width: 900px) {
+  .pc-page .pc-layout { grid-template-columns: 1fr; }
+  .pc-page .pcnav { display: none; }
+  .pc-page .pc-main { padding: 4px 16px 90px; }
+  .set-grid { grid-template-columns: 1fr; }
+  .set-row { flex-wrap: wrap; }
+}
+.pc-page .pc-hero-text { flex: 1 1 300px; }
+@media (min-width: 901px) { .pc-page .pc-step { display: none; } }
+@media (max-width: 600px) { .pc-page .pc-ico.lg { display: none; } }
