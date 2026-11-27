@@ -93,6 +93,9 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   (`--force-uninstall`), stop an uninstaller still running after 15 minutes, and check afterwards that the
   program is really gone (many uninstallers return before they finish). NSIS `uninst.exe` no longer gets Inno
   Setup switches.
+- **Copilot, Edge, Chrome and other Chromium-installed apps failed to uninstall (exit 20):** any uninstaller run
+  with `--uninstall` gets `--force-uninstall` instead of `/S`, whatever its exe is called (`copilot_setup.exe`…),
+  and their "uninstalled" code 19 counts as success.
 - **Repair Windows Update on PCs with an update blocker:** tools like Windows Update Blocker lock the update
   services' permissions so even SYSTEM gets "access denied" (`sc.exe exit 5`). The repair now takes the
   service's registry key back, restores Windows' usual permissions on it and on the service, then re-enables it;

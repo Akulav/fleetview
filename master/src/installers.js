@@ -197,9 +197,12 @@ export function splitCommand(cmd) {
 const SILENT_RULES = [
   // AnyDesk: --uninstall opens a confirmation window, which hangs as SYSTEM.
   [/^anydesk/i, () => "--silent --remove"],
-  // Chromium-based browsers' setup.exe.
-  [/^setup\.exe$/i, (args) => (/--uninstall/i.test(args) && !/--force-uninstall/i.test(args) ? `${args} --force-uninstall` : args)],
 ];
+
+/** Chromium-style installers (Chrome, Edge, Copilot, Brave, Opera, WebView2…)
+ * whatever their exe is called: `--uninstall` needs `--force-uninstall` to
+ * run without asking, and never takes /S. */
+const isChromiumUninstall = (args) => /(^|\s)--uninstall(\s|$)/i.test(args);
 
 /** The silent form of an UninstallString: { file, args }. */
 export function silentCommand(uninstall) {
@@ -218,6 +221,9 @@ export function silentCommand(uninstall) {
     }
   } else if (rule) {
     args = rule[1](args);
+  } else if (isChromiumUninstall(args)) {
+    args = args.replace(/(^|\s)\/S(?=\s|$)/g, " ");
+    if (!/--force-uninstall/i.test(args)) args += " --force-uninstall";
   } else if (/^unins\d{3}\.exe$/.test(exeName)) {
     if (!/\/verysilent/i.test(args)) args += " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART";
   } else if (!/\/s\b|\/quiet|\/silent|--silent|\/qn/i.test(args)) {
@@ -277,6 +283,13 @@ if ($name -and -not $before.Count) { 'Not installed (any more): ' + $name + ' - 
 $e = $before | Select-Object -First 1
 if ($e -and $e.msi -and $e.key -match '^\{[0-9A-Fa-f-]+\}$') { $file = 'msiexec.exe'; $argv = '/X ' + $e.key + ' /qn /norestart' }
 elseif ($e -and $e.quiet) { $c = Split-Command $e.quiet; $file = $c[0]; $argv = $c[1] }
+# Chromium-style installers (Chrome, Edge, Copilot...): silent only with
+# --force-uninstall, and /S means nothing to them.
+$chromium = $argv -match '(^|\s)--uninstall(\s|$)'
+if ($chromium) {
+  $argv = ($argv -replace '(^|\s)/S(?=\s|$)', ' ').Trim()
+  if ($argv -notmatch '--force-uninstall') { $argv += ' --force-uninstall' }
+}
 'Running: ' + $file + ' ' + $argv
 $sp = @{ FilePath = $file; PassThru = $true; WindowStyle = 'Hidden' }
 if ($argv) { $sp.ArgumentList = $argv }
@@ -289,7 +302,14 @@ if (-not $p.WaitForExit(@MINS@ * 60000)) {
 }
 $code = $p.ExitCode
 if ($null -eq $code) { $code = 0 }
-if ($code -notin 0, 1641, 3010) { 'The uninstaller failed with exit code ' + $code + '.'; exit $code }
+$ok = @(0, 1641, 3010)
+# Chromium-style installers report a finished uninstall as 19.
+if ($chromium) { $ok += 19 }
+if ($code -notin $ok) {
+  $why = @{ 7 = 'install failed'; 14 = 'insufficient rights'; 15 = 'not installed'; 16 = 'the program is running - close it first'; 20 = 'uninstall failed'; 21 = 'uninstall was cancelled' }
+  'The uninstaller failed with exit code ' + $code + $(if ($argv -match '--uninstall' -and $why[[int]$code]) { ' (' + $why[[int]$code] + ')' } else { '' }) + '.'
+  exit $code
+}
 if ($name) {
   # Many uninstallers hand over to a copy of themselves and return at once:
   # give them time to finish before checking.

@@ -90,6 +90,13 @@ test("uninstall scripts", () => {
   assert.deepEqual(silentCommand('"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe" --uninstall'), { file: "C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe", args: "--silent --remove" });
   assert.match(silentCommand('"C:\\Program Files\\Google\\Chrome\\Application\\120.0\\Installer\\setup.exe" --uninstall --system-level').args, /--force-uninstall$/);
   assert.equal(silentCommand('"C:\\x\\uninst.exe" /S').args, "/S");
+  // Copilot (and Edge, Brave…) use Chromium's installer under other names; exit 20 without --force-uninstall.
+  assert.equal(
+    silentCommand('"C:\\Program Files (x86)\\Microsoft\\Copilot\\Application\\158.0.4370.45\\Installer\\copilot_setup.exe" --uninstall --mscopilot --channel=stable --system-level --verbose-logging').args,
+    "--uninstall --mscopilot --channel=stable --system-level --verbose-logging --force-uninstall",
+  );
+  assert.doesNotMatch(silentCommand('"C:\\x\\copilot_setup.exe" --uninstall /S').args, /\/S/);
+  assert.match(uninstallScript('"C:\\x\\copilot_setup.exe" --uninstall', "Microsoft Copilot"), /\$ok \+= 19/, "19 = Chromium's 'uninstalled'");
   const any = uninstallScript('"C:\\Program Files (x86)\\AnyDesk\\AnyDesk.exe" --uninstall', "AnyDesk", { timeoutMin: 10 });
   assert.match(any, /WaitForExit\(10 \* 60000\)/, "a hung uninstaller is stopped");
   assert.match(any, /taskkill\.exe \/T \/F/);
