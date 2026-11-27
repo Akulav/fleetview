@@ -78,6 +78,13 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   baseline, adblocker, Windows Update check/install/repair, clean-up, snapshot and speed test, screenshot,
   message, PowerShell, saved scripts, restart/shut down/cancel, agent version/update/settings/refresh, and
   removing it from the list.
+- **Cleaning** page (sidebar): every PC cleaned or not, with when, who and the note, CPU / memory before → after
+  and boot time before → after per PC and on average; filters, tick PCs to *Clean up…* (snapshot, debloat, temp
+  files, mark) or *Mark cleaned*. The Computers list has a *Cleaned* filter next to *Not cleaned*.
+- **Packet loss** in the internet speed test: 30 pings to the office router and 40 to the internet before the
+  line is loaded, so loss on the local network / Wi-Fi is told apart from loss on the provider's line (with
+  average ping and jitter). Shown on the PC page with a plain explanation, as a badge in the list, red in the
+  speed history, and 2 % or more puts the PC in *Needs attention*.
 - **Maintenance tab** on each PC's page: every task by group with how it last went on that PC — green when done
   (security baseline applied, adblocker installed, updates checked…), amber when it found something (protection
   off, updates waiting), red when it failed — with Run / Run again and Details. "x of y done on this PC" at the

@@ -131,6 +131,14 @@ test("snapshot and speed records are parsed defensively", () => {
   assert.equal(cleanSpeed({ down_mbps: "94.3", up_mbps: 38, ping_ms: 12, isp: "x".repeat(500) }).isp.length, 120);
   const sp = speedScript({ max_down_mb: 1000 });
   assert.match(sp, /Min\(100000000,/, "download capped at 100 MB");
+  // Packet loss: to the office router (LAN / Wi-Fi) and to the internet, kept with the test.
+  assert.match(sp, /Measure-Loss @\(\$gw\) 30/);
+  assert.match(sp, /Measure-Loss @\('1\.1\.1\.1'\) 40/);
+  const withLoss = cleanSpeed({ down_mbps: 80, loss_pct: 4, loss_gw_pct: "3.3", icmp_ms: 14, icmp_jitter_ms: 2, gw_ms: 1 });
+  assert.equal(withLoss.loss, 4);
+  assert.equal(withLoss.loss_gw, 3.3);
+  assert.equal(withLoss.icmp_jitter, 2);
+  assert.equal(cleanSpeed({ down_mbps: 80, loss_pct: null }).loss, null, "no ping reply is not 0 % loss");
 });
 
 /** A fake online PC: answers RunPowerShell with `reply(script)`. */

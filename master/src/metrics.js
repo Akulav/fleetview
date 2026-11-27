@@ -271,6 +271,28 @@ function Send-Bytes($n) {
   $sw.Stop(); [void]$r.EnsureSuccessStatusCode(); $r.Dispose()
   @{ bytes = $n; sec = [Math]::Max(0.001, $sw.Elapsed.TotalSeconds) }
 }
+# Packet loss, before the line is loaded: pings to the office router (local
+# network / Wi-Fi) and to the internet (1.1.1.1, or 8.8.8.8 if it does not answer). Loss to
+# the router means the LAN or Wi-Fi; loss only beyond it means the provider.
+function Measure-Loss($targets, $count) {
+  $p = New-Object System.Net.NetworkInformation.Ping
+  $lost = 0; $times = New-Object System.Collections.Generic.List[double]
+  for ($i = 0; $i -lt $count; $i++) {
+    try { $r = $p.Send([string]$targets[$i % $targets.Count], 1000); if ([string]$r.Status -eq 'Success') { $times.Add([double]$r.RoundtripTime) } else { $lost++ } } catch { $lost++ }
+    Start-Sleep -Milliseconds 150
+  }
+  $p.Dispose()
+  # No reply at all: pings are blocked on the way, not a measurement.
+  if ($times.Count -eq 0) { return $null }
+  $j = 0; for ($i = 1; $i -lt $times.Count; $i++) { $j += [Math]::Abs($times[$i] - $times[$i - 1]) }
+  @{ loss = [Math]::Round($lost / $count * 100, 1); avg = [Math]::Round(($times | Measure-Object -Average).Average, 1); jitter = $(if ($times.Count -gt 1) { [Math]::Round($j / ($times.Count - 1), 1) } else { 0 }) }
+}
+$gw = $null
+try { $gw = [string](Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | Sort-Object { $_.RouteMetric + $_.InterfaceMetric } | Select-Object -First 1).NextHop } catch {}
+if ($gw -eq '0.0.0.0' -or $gw -eq '') { $gw = $null }
+$lan = $null; if ($gw) { $lan = Measure-Loss @($gw) 30 }
+$wan = Measure-Loss @('1.1.1.1') 40
+if (-not $wan) { $wan = Measure-Loss @('8.8.8.8') 40 }
 try {
   $meta = $null; try { $meta = $h.GetStringAsync($base + '/meta').Result | ConvertFrom-Json } catch {}
   # Latency: small requests over the open connection (the first one pays for TLS).
@@ -294,9 +316,13 @@ try {
   exit 1
 }
 $res = [ordered]@{ down_mbps = $downMbps; up_mbps = $upMbps; ping_ms = $ping; jitter_ms = $jitter; down_mb = [Math]::Round($d.bytes / 1e6, 1); up_mb = [Math]::Round($u.bytes / 1e6, 1);
-  isp = $(if ($meta) { $meta.asOrganization } else { $null }); colo = $(if ($meta) { $meta.colo } else { $null }); ip = $(if ($meta) { $meta.clientIp } else { $null }) }
+  isp = $(if ($meta) { $meta.asOrganization } else { $null }); colo = $(if ($meta) { $meta.colo } else { $null }); ip = $(if ($meta) { $meta.clientIp } else { $null })
+  loss_pct = $(if ($wan) { $wan.loss } else { $null }); icmp_ms = $(if ($wan) { $wan.avg } else { $null }); icmp_jitter_ms = $(if ($wan) { $wan.jitter } else { $null })
+  loss_gw_pct = $(if ($lan) { $lan.loss } else { $null }); gw_ms = $(if ($lan) { $lan.avg } else { $null }) }
 'FVSPEED ' + (ConvertTo-Json -InputObject $res -Compress)
-'Down ' + $downMbps + ' Mbps, up ' + $upMbps + ' Mbps, latency ' + $ping + ' ms' + $(if ($meta -and $meta.asOrganization) { ' (' + $meta.asOrganization + ')' } else { '' })`;
+if ($wan) { 'Internet pings: ' + $wan.loss + '% lost, ' + $wan.avg + ' ms average, jitter ' + $wan.jitter + ' ms' } else { 'Internet pings: no reply (blocked on the way)' }
+if ($lan) { 'Router (' + $gw + ') pings: ' + $lan.loss + '% lost, ' + $lan.avg + ' ms average' } elseif ($gw) { 'Router (' + $gw + ') does not answer pings' }
+'Down ' + $downMbps + ' Mbps, up ' + $upMbps + ' Mbps, latency ' + $ping + ' ms' + $(if ($wan) { ', loss ' + $wan.loss + '%' + $(if ($lan) { ' (router ' + $lan.loss + '%)' } else { '' }) } else { '' }) + $(if ($meta -and $meta.asOrganization) { ' (' + $meta.asOrganization + ')' } else { '' })`;
 }
 
 /** Pull the FVPERF / FVSPEED record out of a script's output. */
@@ -335,7 +361,21 @@ export function cleanSpeed(r, at = new Date().toISOString()) {
   const num = (x) => (Number.isFinite(Number(x)) && x !== null && x !== "" ? Number(x) : null);
   const str = (x) => (typeof x === "string" ? x.slice(0, 120) : null);
   if (num(r.down_mbps) === null) return null;
-  return { at, down: num(r.down_mbps), up: num(r.up_mbps), ping: num(r.ping_ms), jitter: num(r.jitter_ms), isp: str(r.isp), colo: str(r.colo), ip: str(r.ip) };
+  return {
+    at,
+    down: num(r.down_mbps),
+    up: num(r.up_mbps),
+    ping: num(r.ping_ms),
+    jitter: num(r.jitter_ms),
+    loss: num(r.loss_pct),
+    loss_gw: num(r.loss_gw_pct),
+    icmp: num(r.icmp_ms),
+    icmp_jitter: num(r.icmp_jitter_ms),
+    gw_ms: num(r.gw_ms),
+    isp: str(r.isp),
+    colo: str(r.colo),
+    ip: str(r.ip),
+  };
 }
 
 /**

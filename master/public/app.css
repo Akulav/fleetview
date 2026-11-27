@@ -914,3 +914,11 @@ main[data-view="pc"] { max-width: none; padding: 0; }
 .mt-mark.running { background: var(--accent-soft); color: var(--accent); }
 .btn.active-btn { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }
 .status-stack > span { display: grid; grid-template-columns: 58px minmax(0, 1fr); column-gap: 2px; align-items: start; }
+/* packet loss */
+.big-stats > .loss.ok b { color: var(--ok); }
+.big-stats > .loss.warn { background: var(--warn-soft); }
+.big-stats > .loss.warn b { color: var(--warn); }
+.big-stats > .loss.bad { background: var(--bad-soft); }
+.big-stats > .loss.bad b { color: var(--bad); }
+.big-stats > .loss .sub { display: block; font-size: 12px; }
+.speed-bars i.lossy { background: var(--bad); opacity: 1; }

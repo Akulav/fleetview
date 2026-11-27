@@ -315,6 +315,7 @@ const VIEWS = {
   dashboard: { label: "Home", icon: "home", section: "" },
   computers: { label: "Computers", icon: "monitor", section: "Devices" },
   apply: { label: "Apply changes", icon: "layers", section: "Devices" },
+  cleaning: { label: "Cleaning", icon: "sparkles", section: "Devices" },
   activity: { label: "Activity", icon: "activity", section: "Devices" },
   scripts: { label: "Scripts", icon: "terminal", section: "Configure" },
   startup: { label: "Startup apps", icon: "zap", section: "Configure" },
@@ -489,6 +490,7 @@ function renderMain(full = false) {
   if (S.view === "scripts") return renderScripts(main, full);
   if (S.view === "startup") return renderStartupView(main, full);
   if (S.view === "apply") return renderApply(main, full);
+  if (S.view === "cleaning") return renderCleaning(main, full);
   if (S.view === "vault" && full) return renderVaultView(main);
 }
 
@@ -615,6 +617,8 @@ function issuesOf(a) {
   if (a.emanagement && ["error", "unsupported"].includes(a.emanagement.state)) out.push({ level: 2, icon: "alert", text: "MoldSign bridge not working" });
   if (a.outdated) out.push({ level: 0, icon: "download", text: "Agent update available" });
   if (a.pending_name) out.push({ level: 0, icon: "refresh", text: `Restart needed to become ${a.pending_name}` });
+  if ((a.speed?.loss_gw ?? 0) >= 2) out.push({ level: 1, icon: "wifiOff", text: `${a.speed.loss_gw}% packet loss on the local network / Wi-Fi` });
+  else if ((a.speed?.loss ?? 0) >= 2) out.push({ level: 1, icon: "wifi", text: `${a.speed.loss}% packet loss on the internet line` });
   const sec = lastRun(a.id, "Security check");
   if (sec?.state === "failed") out.push({ level: 1, icon: "shield", text: sec.message?.replace(/^Off: /, "Protection off: ") || "Security check found protection off", job: sec.job.id });
   for (const j of S.jobs.values()) {
@@ -718,6 +722,98 @@ function renderDashboard(main) {
   );
 }
 
+// --------------------------------------------------------------- cleaning --
+// Which PCs are cleaned, and whether it helped: CPU and memory averages for the
+// 7 days before the mark against the time since, boot time from snapshots.
+const CL = { filter: "all", data: null, loading: false, selected: new Set() };
+async function loadCleaning() {
+  if (CL.loading) return;
+  CL.loading = true;
+  try {
+    CL.data = await api("GET", "/api/metrics/fleet");
+  } catch {
+    CL.data = null;
+  }
+  CL.loading = false;
+  if (S.view === "cleaning") renderCleaning($("#main"), true);
+}
+function renderCleaning(main, full) {
+  // Live updates refresh the data (a PC may just have been marked).
+  const key = [...S.agents.values()].map((a) => `${a.id}:${a.cleaned?.at ?? ""}`).join(",");
+  if (!full && CL.key === key) return;
+  if (CL.key !== key) {
+    CL.key = key;
+    if (!full || !CL.data) loadCleaning();
+  }
+  const agents = [...S.agents.values()];
+  const rows = new Map((CL.data?.rows ?? []).map((r) => [r.id, r]));
+  const cleaned = agents.filter((a) => a.cleaned);
+  const dirty = agents.filter((a) => !a.cleaned);
+  const f = CL.data;
+  const pct = (x) => (x == null ? "—" : `${r1(x)}%`);
+  const list = agents
+    .filter((a) => (CL.filter === "cleaned" ? a.cleaned : CL.filter === "dirty" ? !a.cleaned : true))
+    .sort((a, b) => (!!a.cleaned - !!b.cleaned) || String(b.cleaned?.at ?? "").localeCompare(String(a.cleaned?.at ?? "")) || a.hostname.localeCompare(b.hostname));
+  for (const id of [...CL.selected]) if (!S.agents.has(id)) CL.selected.delete(id);
+  const sel = [...CL.selected];
+  const seg = (id, label, n) => h("button", { class: CL.filter === id ? "active" : "", onclick: () => { CL.filter = id; renderCleaning(main, true); } }, label, h("span", { class: "seg-n" }, n));
+  const cleanUp = (ids) => { AP.steps = []; APPLY_PRESETS.find((p) => p.id === "clean").steps.forEach(apAdd); AP.name = "Clean-up"; openApply(ids); };
+  const kpi = (ic, tone, label, value, foot) => h("div", { class: `kpi ${tone}` }, h("span", { class: "kpi-ico" }, icon(ic, 20)), h("span", { class: "kpi-body" }, h("span", { class: "kpi-label" }, label), h("b", { class: "kpi-value" }, value), h("span", { class: "kpi-foot" }, foot)));
+  put(
+    main,
+    pageHead("Cleaning", "Which computers are cleaned, and whether it made them faster.",
+      h("button", { class: "btn primary", disabled: !dirty.length, onclick: () => cleanUp(dirty.map((a) => a.id)) }, icon("sparkles", 16), `Clean up the ${dirty.length} not cleaned…`)),
+    h(
+      "div",
+      { class: "kpis" },
+      kpi("sparkles", "ok", "Cleaned", `${cleaned.length} / ${agents.length}`, dirty.length ? `${dirty.length} still to do` : "all done"),
+      kpi("cpu", "blue", "CPU before → after", f?.measured ? `${pct(f.cpu_before)} → ${pct(f.cpu_after)}` : "—", f?.measured ? `average of ${plural(f.measured, "PC")}` : "needs a few days of data"),
+      kpi("gauge", "violet", "Memory before → after", f?.measured ? `${pct(f.mem_before)} → ${pct(f.mem_after)}` : "—", f?.measured ? `average of ${plural(f.measured, "PC")}` : "needs a few days of data"),
+    ),
+    h(
+      "div",
+      { class: "card grid-card" },
+      h("div", { class: "toolbar" },
+        h("div", { class: "seg" }, seg("all", "All", agents.length), seg("dirty", "Not cleaned", dirty.length), seg("cleaned", "Cleaned", cleaned.length)),
+        h("span", { class: "spacer" }),
+        sel.length
+          ? [h("span", { class: "sub" }, `${sel.length} chosen`),
+             h("button", { class: "btn small", onclick: () => cleanUp(sel) }, icon("sparkles", 14), "Clean up…"),
+             h("button", { class: "btn small", onclick: () => setCleaned(sel, true).then(() => CL.selected.clear()) }, icon("check", 14), "Mark cleaned"),
+             h("button", { class: "icon-btn", title: "Clear the selection", onclick: () => { CL.selected.clear(); renderCleaning(main, true); } }, icon("x", 16))]
+          : h("span", { class: "sub" }, "Tick computers to clean them up or mark them.")),
+      h("div", { class: "table-wrap" },
+        h("table", { class: "grid" },
+          h("thead", {}, h("tr", {},
+            h("th", { class: "cb" }, h("input", { type: "checkbox", checked: list.length > 0 && list.every((a) => CL.selected.has(a.id)), onclick: (e) => { list.forEach((a) => (e.target.checked ? CL.selected.add(a.id) : CL.selected.delete(a.id))); renderCleaning(main, true); } })),
+            h("th", {}, "Computer"), h("th", {}, "Cleaned"), h("th", { class: "hide-sm" }, "CPU before → after"), h("th", { class: "hide-sm" }, "Memory before → after"), h("th", { class: "hide-md" }, "Boot"), h("th", { class: "act" }))),
+          h("tbody", {},
+            list.length
+              ? list.map((a) => {
+                  const r = rows.get(a.id);
+                  const both = (b, x) => (b == null && x == null ? h("span", { class: "sub" }, "—") : [`${pct(b)} → ${pct(x)} `, delta(b, x) ?? ""]);
+                  return h("tr", { class: CL.selected.has(a.id) ? "selected" : "", onclick: (e) => { if (e.target.type !== "checkbox" && !e.target.closest("button")) openDevice(a.id); } },
+                    h("td", { class: "cb" }, h("input", { type: "checkbox", checked: CL.selected.has(a.id), onclick: (e) => { e.stopPropagation(); e.target.checked ? CL.selected.add(a.id) : CL.selected.delete(a.id); renderCleaning(main, true); } })),
+                    h("td", { class: "name-cell" }, h("div", { class: "pc-name" }, h("span", { class: `dot${a.online ? " on" : ""}` }), h("span", { class: "grow" }, h("b", {}, a.hostname), h("span", { class: "sub pc-meta" }, a.user ? a.user.split("\\").pop() : a.online ? "online" : `offline · ${ago(a.last_seen)}`)))),
+                    h("td", {}, a.cleaned
+                      ? h("span", { class: "status-cell" }, h("span", { class: "badge ok" }, icon("sparkles", 12), new Date(a.cleaned.at).toLocaleDateString()), h("span", { class: "sub" }, `${ago(a.cleaned.at)}${a.cleaned.by ? ` · ${a.cleaned.by}` : ""}${a.cleaned.note ? ` · ${a.cleaned.note}` : ""}`))
+                      : h("span", { class: "badge warn" }, "Not cleaned")),
+                    h("td", { class: "hide-sm" }, a.cleaned ? both(r?.before?.cpu, r?.after?.cpu) : h("span", { class: "sub" }, "—")),
+                    h("td", { class: "hide-sm" }, a.cleaned ? both(r?.before?.mem, r?.after?.mem) : h("span", { class: "sub" }, "—")),
+                    h("td", { class: "hide-md" }, r && (r.boot_before || r.boot_after) ? [`${r.boot_before ? Math.round(r.boot_before / 1000) : "—"} → ${r.boot_after ? Math.round(r.boot_after / 1000) : "—"} s `, delta(r.boot_before && r.boot_before / 1000, r.boot_after && r.boot_after / 1000, " s") ?? ""] : h("span", { class: "sub" }, "—")),
+                    h("td", { class: "act" }, a.cleaned
+                      ? h("span", { class: "row-go" }, icon("chevronRight", 16))
+                      : h("button", { class: "btn small", onclick: (e) => { e.stopPropagation(); cleanUp([a.id]); } }, "Clean up…")),
+                  );
+                })
+              : h("tr", { class: "empty-row" }, h("td", { colspan: 7 }, h("div", { class: "empty-state" }, h("span", { class: "es-ico ok" }, icon("sparkles", 28)), h("b", {}, CL.filter === "dirty" ? "Every computer is cleaned" : "Nothing here yet"), h("span", {}, "Run a Clean-up (snapshot → debloat → temp files → mark) from Apply changes."))))),
+        ),
+      ),
+    ),
+    h("p", { class: "sub", style: { marginTop: "12px" } }, "Averages are taken while each PC was on: the 7 days before the mark against the time since (up to 7 days). How a PC is used matters too — compare several PCs, not one. Boot times come from performance snapshots taken before and after the mark."),
+  );
+}
+
 // -------------------------------------------------------------- computers --
 const SORTS = {
   name: (a, b) => a.hostname.localeCompare(b.hostname),
@@ -742,6 +838,7 @@ function filteredAgents() {
       if (S.filter === "offline" && a.online) return false;
       if (S.filter === "outdated" && !a.outdated) return false;
       if (S.filter === "dirty" && a.cleaned) return false;
+      if (S.filter === "cleaned" && !a.cleaned) return false;
       if (S.filter === "attention" && !issuesOf(a).length) return false;
       if (S.tag && !(a.tags ?? []).includes(S.tag)) return false;
       if (!q) return true;
@@ -777,6 +874,7 @@ function renderComputers(main, full) {
             seg("offline", "Offline", count((a) => !a.online)),
             seg("attention", "Needs attention", count((a) => issuesOf(a).length)),
             seg("dirty", "Not cleaned", count((a) => !a.cleaned)),
+            seg("cleaned", "Cleaned", count((a) => a.cleaned)),
             count((a) => a.outdated) ? seg("outdated", "Agent outdated", count((a) => a.outdated)) : null),
           tags.length
             ? h("select", { class: "tag-select", title: "Only computers with this tag", onchange: (e) => { S.tag = e.target.value; renderRows(); } }, h("option", { value: "" }, "All tags"), tags.map((t) => h("option", { value: t, selected: S.tag === t }, t)))
@@ -873,7 +971,8 @@ function renderRows() {
           h("td", { class: "hide-md" }, a.online ? meter(a.cpu) : h("span", { class: "sub" }, "—")),
           h("td", { class: "hide-md" }, meter(a.mem)),
           h("td", { class: "hide-sm" }, meter(a.disk)),
-          h("td", { class: "hide-md" }, a.speed?.down != null ? h("span", { class: "net-cell", title: `${ago(a.speed.at)}${a.speed.ping != null ? ` · ${r1(a.speed.ping)} ms` : ""}` }, h("b", {}, Math.round(a.speed.down)), h("span", { class: "sub" }, ` / ${Math.round(a.speed.up ?? 0)} Mbps`)) : h("span", { class: "sub" }, "—")),
+          h("td", { class: "hide-md" }, a.speed?.down != null ? h("span", { class: "net-cell", title: `${ago(a.speed.at)}${a.speed.ping != null ? ` · ${r1(a.speed.ping)} ms` : ""}` }, h("b", {}, Math.round(a.speed.down)), h("span", { class: "sub" }, ` / ${Math.round(a.speed.up ?? 0)} Mbps`),
+            Math.max(a.speed.loss ?? 0, a.speed.loss_gw ?? 0) > 0 ? h("span", { class: `badge ${lossTone(Math.max(a.speed.loss ?? 0, a.speed.loss_gw ?? 0)) === "bad" ? "bad" : "warn"}`, style: { marginLeft: "6px" }, title: `Packet loss: internet ${a.speed.loss ?? "—"}%, router ${a.speed.loss_gw ?? "—"}%` }, `${r1(Math.max(a.speed.loss ?? 0, a.speed.loss_gw ?? 0))}% loss`) : null) : h("span", { class: "sub" }, "—")),
           h("td", { class: "hide-lg" }, h("span", { class: "mono" }, a.agent_version || "—"), a.outdated ? h("span", { class: "badge warn", style: { marginLeft: "6px" } }, "update") : null),
           h("td", { class: "act" }, h("span", { class: "row-go" }, icon("chevronRight", 16))),
         );
@@ -1379,6 +1478,18 @@ function lastRun(id, label) {
   return null;
 }
 const RUNNING = new Set(["queued", "waiting", "preparing", "sending", "installing", "running"]);
+/** Packet loss: 0 is fine, under 2 % worth watching, 2 % and up is a problem. */
+const lossTone = (x) => (x == null ? "" : x >= 2 ? "bad" : x > 0 ? "warn" : "ok");
+/** One line saying where the loss is: local network / Wi-Fi or the provider. */
+function lossVerdict(sp) {
+  const lan = sp.loss_gw ?? null;
+  const wan = sp.loss ?? null;
+  if (lan == null && wan == null) return null;
+  if ((lan ?? 0) >= 2) return h("div", { class: "note" }, `Packets are lost already on the way to the office router (${r1(lan)}%): a cable, switch or Wi-Fi problem near this PC.`);
+  if ((wan ?? 0) >= 2) return h("div", { class: "note" }, `The local network is fine but ${r1(wan)}% of packets are lost beyond the router: the internet line or provider.`);
+  if ((lan ?? 0) > 0 || (wan ?? 0) > 0) return h("div", { class: "sub" }, "A little packet loss — fine for browsing, can stutter calls and remote desktop.");
+  return h("div", { class: "run-status done" }, icon("checkCircle", 14), "No packet loss.");
+}
 const r1 = (x) => (x == null ? "—" : String(Math.round(Number(x) * 10) / 10));
 function fmtPct(x) {
   return x == null ? "—" : `${Math.round(x)}%`;
@@ -1684,9 +1795,18 @@ function mountDevice(mainEl, id, startTab = "overview") {
             h("div", {}, h("span", {}, "Latency"), h("b", {}, `${r1(sp.ping)} ms`)),
           )
         : h("div", { class: "sub" }, a.speed?.error ? `Last test failed: ${a.speed.error}` : "No speed test yet."),
+      sp && (sp.loss != null || sp.loss_gw != null)
+        ? h(
+            "div",
+            { class: "big-stats" },
+            h("div", { class: `loss ${lossTone(sp.loss)}`, title: "Pings to 1.1.1.1 before the speed test" }, h("span", {}, "Packet loss · internet"), h("b", {}, sp.loss != null ? `${r1(sp.loss)}%` : "—"), h("span", { class: "sub" }, sp.icmp != null ? `${r1(sp.icmp)} ms, jitter ${r1(sp.icmp_jitter)} ms` : "no ping reply")),
+            h("div", { class: `loss ${lossTone(sp.loss_gw)}`, title: "Pings to the office router: loss here means the local network or Wi-Fi" }, h("span", {}, "Packet loss · router"), h("b", {}, sp.loss_gw != null ? `${r1(sp.loss_gw)}%` : "—"), h("span", { class: "sub" }, sp.gw_ms != null ? `${r1(sp.gw_ms)} ms` : "router doesn't answer pings")),
+          )
+        : null,
+      sp ? lossVerdict(sp) : null,
       sp ? h("div", { class: "sub" }, `${ago(sp.at)}${sp.isp ? ` · ${sp.isp}` : ""}${sp.colo ? ` · via ${sp.colo}` : ""}${sp.scheduled ? " · scheduled" : ""}`) : null,
       speeds.length > 1
-        ? h("div", { class: "speed-bars", title: "Download speed, oldest to newest" }, speeds.slice(-30).map((s) => h("i", { title: `${new Date(s.at).toLocaleString()}: ↓ ${r1(s.down)} ↑ ${r1(s.up)} Mbps, ${r1(s.ping)} ms`, style: { height: `${Math.max(4, (s.down / maxDown) * 100)}%` } })))
+        ? h("div", { class: "speed-bars", title: "Download speed, oldest to newest (red: packet loss)" }, speeds.slice(-30).map((s) => h("i", { class: (s.loss ?? 0) >= 2 || (s.loss_gw ?? 0) >= 2 ? "lossy" : "", title: `${new Date(s.at).toLocaleString()}: ↓ ${r1(s.down)} ↑ ${r1(s.up)} Mbps, ${r1(s.ping)} ms${s.loss != null ? `, loss ${r1(s.loss)}%` : ""}${s.loss_gw != null ? ` (router ${r1(s.loss_gw)}%)` : ""}`, style: { height: `${Math.max(4, (s.down / maxDown) * 100)}%` } })))
         : null,
     );
 
