@@ -78,6 +78,10 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   baseline, adblocker, Windows Update check/install/repair, clean-up, snapshot and speed test, screenshot,
   message, PowerShell, saved scripts, restart/shut down/cancel, agent version/update/settings/refresh, and
   removing it from the list.
+- **Maintenance tab** on each PC's page: every task by group with how it last went on that PC — green when done
+  (security baseline applied, adblocker installed, updates checked…), amber when it found something (protection
+  off, updates waiting), red when it failed — with Run / Run again and Details. "x of y done on this PC" at the
+  top. The Settings tab shows the same colours.
 - New colours, type and icons (drawn in the app, no external files; the CSP is unchanged), light and dark.
 - **Sign-in** page redesigned.
 

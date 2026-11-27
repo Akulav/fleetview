@@ -1729,10 +1729,66 @@ function mountDevice(mainEl, id, startTab = "overview") {
   const go2 = (nid) => {
     if (nid && nid !== id) openDevice(nid, tab);
   };
-  const lastText = (label) => {
+  /** How a task last went on this PC: green done, amber "found something", red failed. */
+  const runState = (label, failMeaning = null) => {
     const r = lastRun(id, label);
-    return r ? `${STATE_LABEL[r.state]?.[0] ?? r.state} ${ago(r.at)}${r.message ? ` — ${r.message}` : ""}` : "Never run on this PC";
+    if (!r) return { r: null, cls: "", text: "Never run on this PC", ic: null };
+    if (RUNNING.has(r.state)) return { r, cls: "running", text: `${STATE_LABEL[r.state]?.[0] ?? r.state}…`, ic: "clock" };
+    if (r.state === "succeeded") return { r, cls: "done", text: `Done ${ago(r.at)}`, ic: "checkCircle" };
+    if (r.state === "failed") return { r, cls: failMeaning ? "warn" : "bad", text: `${failMeaning ? "Needs attention" : "Failed"} ${ago(r.at)}`, ic: "alert" };
+    return { r, cls: "", text: `${STATE_LABEL[r.state]?.[0] ?? r.state} ${ago(r.at)}`, ic: null };
   };
+  const statusLine = (label, failMeaning = null) => {
+    const s = runState(label, failMeaning);
+    return h("span", { class: `run-status ${s.cls}` }, s.ic ? icon(s.ic, 14) : null, h("span", {}, s.text, s.r?.message ? h("span", { class: "run-msg" }, ` — ${s.r.message}`) : null));
+  };
+  const taskFail = (taskId) => S.tasks.find((t) => t.id === taskId)?.fail_meaning ?? null;
+  const showTab = (k) => {
+    tab = k;
+    S.pcTab = k;
+    history.replaceState(null, "", `#/pc/${encodeURIComponent(id)}${k === "overview" ? "" : `/${k}`}`);
+    if (k === "accounts" && !acc.list && !acc.loading) loadAccounts();
+    if (k === "startup" && !su.list && !su.loading) su.load();
+    d.paint();
+    window.scrollTo(0, 0);
+  };
+  /** Every maintenance task for this PC, with how it last went here. */
+  function maintenanceTab(a) {
+    const offline = !a.online;
+    const groups = [...new Set(S.tasks.map((t) => t.group))];
+    const row = (t) => {
+      const s = runState(t.label, t.fail_meaning);
+      const running = s.cls === "running";
+      // Tasks with options (baseline, restart…) open the form; the rest run at once.
+      const withForm = !!t.options;
+      return h(
+        "div",
+        { class: `set-row mt-row ${s.cls}` },
+        h("span", { class: `mt-mark ${s.cls}` }, icon(s.cls === "done" ? "check" : s.cls === "running" ? "clock" : s.cls ? "alert" : "wrench", 15)),
+        h("div", { class: "grow" },
+          h("b", {}, t.label),
+          h("div", {}, statusLine(t.label, t.fail_meaning)),
+          h("div", { class: "sub mt-help", title: t.help }, t.help)),
+        h("div", { class: "set-btns" },
+          s.r ? h("button", { class: "btn small ghost", onclick: () => openJob(s.r.job.id) }, "Details") : null,
+          h("button", {
+            class: `btn small${!s.r && !withForm ? " primary" : ""}`,
+            disabled: running || (offline && !withForm),
+            title: offline && !withForm ? "The PC is offline" : "",
+            onclick: () => (withForm ? openTasks({ ids: [id], task: t.id }) : quickTask([id], t.id)),
+          }, running ? "Running…" : withForm ? "Run…" : s.r ? "Run again" : "Run")),
+      );
+    };
+    const done = S.tasks.filter((t) => runState(t.label, t.fail_meaning).cls === "done").length;
+    return [
+      h("div", { class: "mt-summary" },
+        h("span", { class: "run-status done" }, icon("checkCircle", 15), `${done} of ${S.tasks.length} done on this PC`),
+        h("span", { class: "spacer" }),
+        h("button", { class: "btn small", onclick: () => openApply([id]) }, icon("layers", 14), "Run several in order…")),
+      offline ? h("div", { class: "note" }, "This PC is offline: tasks can't start now. Use Apply changes to queue them for when it connects.") : null,
+      h("div", { class: "set-grid" }, groups.map((g) => h("section", { class: "card set-card" }, h("div", { class: "set-head" }, h("h3", {}, g)), S.tasks.filter((t) => t.group === g).map(row)))),
+    ];
+  }
   /** Everything that can be set or done for this one PC, in one place. */
   function settingsTab(a) {
     const section = (title, desc, ...body) =>
@@ -1787,23 +1843,23 @@ function mountDevice(mainEl, id, startTab = "overview") {
         row("Cleaned", a.cleaned ? `${new Date(a.cleaned.at).toLocaleString()} by ${a.cleaned.by || "—"}${a.cleaned.note ? ` — ${a.cleaned.note}` : ""}` : "Not marked as cleaned yet",
           a.cleaned ? btn("Clear mark", () => confirm(`Remove the cleaned mark from ${a.hostname}?`) && setCleaned([id], false)) : null,
           btn(a.cleaned ? "Mark again" : "Mark as cleaned", () => { const note = prompt("Note (optional), e.g. removed bloat, new SSD", ""); if (note !== null) setCleaned([id], true, note); }, { primary: !a.cleaned, icon: "sparkles" })),
-        row("Security baseline", lastText("Security baseline (turn on all protection)"),
+        row("Security", h("span", { class: "status-stack" }, h("span", {}, "Baseline: ", statusLine("Security baseline (turn on all protection)")), h("span", {}, "Check: ", statusLine("Security check", taskFail("security_status")))),
           btn("Check", () => quickTask([id], "security_status"), { disabled: offline, title: offTip }),
           btn("Apply…", () => openTasks({ ids: [id], task: "security_baseline" }), { icon: "shield" })),
-        row("Adblocker", lastText("Install adblocker in all browsers"),
+        row("Adblocker", statusLine("Install adblocker in all browsers"),
           btn("Install", () => quickTask([id], "adblock"), { disabled: offline, title: offTip }),
           btn("Remove", () => quickTask([id], "adblock_remove"), { disabled: offline, title: offTip })),
-        row("Windows Update", lastText("Check for Windows updates"),
+        row("Windows Update", h("span", { class: "status-stack" }, h("span", {}, "Check: ", statusLine("Check for Windows updates", taskFail("check_updates"))), h("span", {}, "Install: ", statusLine("Install Windows updates"))),
           btn("Check", () => quickTask([id], "check_updates"), { disabled: offline, title: offTip }),
           btn("Install", () => quickTask([id], "install_updates"), { disabled: offline, title: offTip }),
           btn("Repair", () => quickTask([id], "repair_updates"), { disabled: offline, title: offTip })),
-        row("Clean-up", lastText("Clean up temporary files"),
+        row("Clean-up", statusLine("Clean up temporary files"),
           btn("Temp files", () => quickTask([id], "cleanup"), { disabled: offline, title: offTip }),
           btn("Startup apps", () => { tab = "startup"; history.replaceState(null, "", `#/pc/${encodeURIComponent(id)}/startup`); if (!su.list && !su.loading) su.load(); d.paint(); })),
         row("Performance", "A 30-second snapshot and an internet speed test",
           btn("Snapshot", () => quickTask([id], "perf_snapshot"), { disabled: offline, title: offTip }),
           btn("Speed test", () => quickTask([id], "speed_test"), { disabled: offline, title: offTip })),
-        row("More maintenance", "sfc, DISM, Defender scan, disk health, group policy, DNS…", btn("Maintenance…", () => openTasks({ ids: [id] }), { icon: "wrench" })),
+        row("All maintenance tasks", "sfc, DISM, Defender scan, disk health, group policy, DNS…", btn("Open", () => showTab("maintenance"), { icon: "wrench" })),
       ),
       section(
         "Remote",
@@ -1870,8 +1926,8 @@ function mountDevice(mainEl, id, startTab = "overview") {
     paint() {
       const a = S.agents.get(id);
       if (!a) return go("computers");
-      const titles = { overview: "Overview", software: `Programs (${detail?.software?.length ?? a.software_count})`, startup: "Startup apps", accounts: "Accounts", history: "History", settings: "Settings" };
-      const tabIcons = { overview: "home", software: "package", startup: "zap", accounts: "users", history: "activity", settings: "settings" };
+      const titles = { overview: "Overview", maintenance: "Maintenance", software: `Programs (${detail?.software?.length ?? a.software_count})`, startup: "Startup apps", accounts: "Accounts", history: "History", settings: "Settings" };
+      const tabIcons = { overview: "home", maintenance: "wrench", software: "package", startup: "zap", accounts: "users", history: "activity", settings: "settings" };
       const sub = h("div", { class: "subtabs pc-tabs" }, Object.keys(titles).map((k) => h("button", { class: tab === k ? "active" : "", onclick: () => {
         tab = k;
         S.pcTab = k;
@@ -1903,7 +1959,7 @@ function mountDevice(mainEl, id, startTab = "overview") {
             h("button", { class: "icon-btn", title: "Next computer (↓ or J)", onclick: () => step(1) }, icon("chevronRight", 18))),
           h("button", { class: "btn primary", onclick: () => openApply([id]) }, icon("layers", 16), "Apply changes"),
           h("button", { class: "btn", onclick: () => openInstall({ ids: [id] }) }, icon("download", 16), "Install"),
-          h("button", { class: "btn", onclick: () => openTasks({ ids: [id] }) }, icon("wrench", 16), "Maintenance"),
+          h("button", { class: `btn${tab === "maintenance" ? " active-btn" : ""}`, onclick: () => showTab("maintenance") }, icon("wrench", 16), "Maintenance"),
           h("details", { class: "menu" },
             h("summary", { class: "btn" }, icon("more", 16), "More"),
             h("div", { class: "card menu-list" },
@@ -1922,6 +1978,8 @@ function mountDevice(mainEl, id, startTab = "overview") {
         content = overview(a);
       } else if (tab === "settings") {
         content = settingsTab(a);
+      } else if (tab === "maintenance") {
+        content = maintenanceTab(a);
       } else if (tab === "accounts") {
         content = accountsTab(a);
       } else if (tab === "startup") {

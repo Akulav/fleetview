@@ -887,3 +887,30 @@ main[data-view="pc"] { max-width: none; padding: 0; }
 .pc-page .pc-hero-text { flex: 1 1 300px; }
 @media (min-width: 901px) { .pc-page .pc-step { display: none; } }
 @media (max-width: 600px) { .pc-page .pc-ico.lg { display: none; } }
+
+/* ---- task status on a PC: green done, amber needs attention, red failed ---- */
+.run-status { display: inline-flex; align-items: flex-start; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--text-faint); }
+.run-status .ico { margin-top: 2px; }
+.run-status.done { color: var(--ok); }
+.run-status.warn { color: var(--warn); }
+.run-status.bad { color: var(--bad); }
+.run-status.running { color: var(--accent); }
+.run-msg { font-weight: 450; color: var(--text-dim); }
+.status-stack { display: grid; gap: 2px; margin-top: 2px; color: var(--text-faint); font-size: 12.5px; }
+.status-stack > span { display: flex; gap: 4px; align-items: flex-start; }
+.mt-summary { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.mt-summary .run-status { font-size: 14px; }
+.mt-row { align-items: flex-start; border-radius: 10px; margin: 0 -10px; padding: 12px 10px; border-top-color: transparent; }
+.mt-row + .mt-row { border-top: 1px solid var(--border); border-radius: 0; }
+.mt-row.done { background: color-mix(in srgb, var(--ok-soft) 55%, transparent); }
+.mt-row.warn { background: color-mix(in srgb, var(--warn-soft) 55%, transparent); }
+.mt-row.bad { background: color-mix(in srgb, var(--bad-soft) 55%, transparent); }
+.mt-row .grow { display: grid; gap: 2px; }
+.mt-help { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mt-mark { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; flex: none; background: var(--surface-2); color: var(--text-faint); }
+.mt-mark.done { background: var(--ok); color: #fff; }
+.mt-mark.warn { background: var(--warn-soft); color: var(--warn); }
+.mt-mark.bad { background: var(--bad-soft); color: var(--bad); }
+.mt-mark.running { background: var(--accent-soft); color: var(--accent); }
+.btn.active-btn { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }
+.status-stack > span { display: grid; grid-template-columns: 58px minmax(0, 1fr); column-gap: 2px; align-items: start; }
