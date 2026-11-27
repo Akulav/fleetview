@@ -73,6 +73,74 @@ function toast(text, bad = false) {
 }
 const fail = (e) => toast(e.message ?? String(e), true);
 
+/** A notification with a title, a result line and an optional button. */
+function notify({ title, text = "", tone = "", actionLabel = "", action = null, timeout = 10_000 }) {
+  let box = $(".toasts");
+  if (!box) document.body.append((box = h("div", { class: "toasts" })));
+  const ic = { ok: "checkCircle", bad: "alert", warn: "clock", running: "activity" }[tone] ?? "activity";
+  const t = h(
+    "div",
+    { class: `toast rich ${tone}` },
+    h("span", { class: "t-ico" }, icon(ic, 18)),
+    h("div", { class: "t-body" }, h("b", {}, title), text ? h("div", { class: "t-text" }, text) : null,
+      actionLabel ? h("button", { class: "t-action", onclick: () => { t.remove(); action?.(); } }, actionLabel) : null),
+    h("button", { class: "t-close", title: "Close", onclick: () => t.remove() }, icon("x", 14)),
+  );
+  box.append(t);
+  if (timeout) setTimeout(() => t.remove(), timeout);
+}
+
+const ACTIVE_STATES = ["queued", "preparing", "sending", "installing", "running"];
+/** One-glance outcome of a job: { tone, headline, text, done }. */
+function jobResult(j) {
+  const ts = Object.values(j.targets);
+  const n = ts.length;
+  const c = j.counts;
+  const one = n === 1 ? ts[0] : null;
+  const active = ACTIVE_STATES.reduce((s, k) => s + (c[k] ?? 0), 0);
+  if (active) {
+    const done = (c.succeeded ?? 0) + (c.failed ?? 0);
+    return { tone: "running", done: false, headline: one ? `Running on ${one.hostname}…` : `Running — ${done} of ${n} finished`, text: one?.message ?? "" };
+  }
+  const failed = ts.filter((t) => t.state === "failed");
+  const ok = c.succeeded ?? 0;
+  const waiting = c.waiting ?? 0;
+  if (failed.length) {
+    return {
+      tone: "bad",
+      done: true,
+      headline: one ? `Failed on ${one.hostname}` : `Failed on ${failed.length} of ${n}${ok ? `, done on ${ok}` : ""}`,
+      text: one ? one.message : `${failed[0].hostname}: ${failed[0].message}${failed.length > 1 ? ` (+${failed.length - 1} more)` : ""}`,
+    };
+  }
+  if (waiting && !ok) return { tone: "warn", done: true, headline: `Waiting for ${plural(waiting, "offline computer")}`, text: "It runs when they connect." };
+  if (ok === n) return { tone: "ok", done: true, headline: one ? `Done on ${one.hostname}` : n === 2 ? "Done on both computers" : `Done on all ${n} computers`, text: one ? one.message : "" };
+  const other = n - ok - waiting;
+  return {
+    tone: "warn",
+    done: true,
+    headline: `Done on ${ok} of ${n}`,
+    text: [waiting && `${waiting} waiting for the PC to connect`, other && `${other} skipped or cancelled`].filter(Boolean).join(", "),
+  };
+}
+
+/** Jobs started from this browser: their result pops up when they finish. */
+const WATCH = new Set();
+function watchJob(job) {
+  if (!job?.id) return;
+  WATCH.add(job.id);
+  setTimeout(() => WATCH.delete(job.id), 6 * 3600_000); // give up after 6 h
+}
+function checkWatch(j) {
+  if (!WATCH.has(j.id)) return;
+  const r = jobResult(j);
+  if (!r.done) return;
+  WATCH.delete(j.id);
+  // The result is already on screen in its own panel.
+  if (S.drawer?.jobId === j.id) return;
+  notify({ title: `${j.title}: ${r.headline}`, text: r.text, tone: r.tone, actionLabel: "Show result", action: () => openJob(j.id), timeout: r.tone === "bad" ? 30_000 : 12_000 });
+}
+
 // ------------------------------------------------------------------ state --
 const S = {
   user: null,
@@ -164,6 +232,7 @@ function connectEvents() {
   es.addEventListener("job", (e) => {
     const j = JSON.parse(e.data);
     S.jobs.set(j.id, j);
+    checkWatch(j);
     schedule();
   });
   es.addEventListener("job-removed", (e) => {
@@ -606,6 +675,56 @@ document.addEventListener("click", (e) => {
   for (const m of document.querySelectorAll("details.menu[open]")) if (!m.contains(e.target)) m.open = false;
 });
 
+// ----------------------------------------------------------- quick menus --
+/** A small menu floating next to `anchor` (outside any scrolling table). */
+function popMenu(anchor, items) {
+  $(".pop-menu")?.remove();
+  const close = () => {
+    menu.remove();
+    document.removeEventListener("mousedown", outside, true);
+    document.removeEventListener("keydown", esc, true);
+    window.removeEventListener("scroll", close, true);
+  };
+  const outside = (e) => { if (!menu.contains(e.target)) close(); };
+  const esc = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  const menu = h("div", { class: "card pop-menu", role: "menu" },
+    items.map((it) => (it === "-" ? h("div", { class: "pop-sep" }) : it.title
+      ? h("div", { class: "pop-title" }, it.title)
+      : h("button", { class: `menu-item${it.danger ? " danger" : ""}`, disabled: !!it.disabled, title: it.hint ?? "", onclick: () => { close(); it.run(); } }, icon(it.icon ?? "play", 16), h("span", { class: "grow" }, it.label), it.sub ? h("span", { class: "sub" }, it.sub) : null))));
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  const w = menu.offsetWidth, hgt = menu.offsetHeight;
+  menu.style.left = `${Math.max(8, Math.min(innerWidth - w - 8, r.right - w))}px`;
+  menu.style.top = `${r.bottom + hgt + 8 > innerHeight ? Math.max(8, r.top - hgt - 4) : r.bottom + 4}px`;
+  setTimeout(() => {
+    document.addEventListener("mousedown", outside, true);
+    document.addEventListener("keydown", esc, true);
+    window.addEventListener("scroll", close, true);
+  }, 0);
+}
+/** One click from the Computers list to the usual tasks on that PC. */
+function pcQuickMenu(anchor, a) {
+  const off = !a.online;
+  const hint = off ? "The PC is offline" : "";
+  const t = (task, label, ic) => ({ label, icon: ic, disabled: off, hint, run: () => quickTask([a.id], task) });
+  popMenu(anchor, [
+    { title: a.hostname },
+    t("check_updates", "Check for Windows updates", "refresh"),
+    t("install_updates", "Install Windows updates", "download"),
+    t("security_status", "Security check", "shieldCheck"),
+    t("speed_test", "Internet speed test", "wifi"),
+    t("perf_snapshot", "Performance snapshot", "gauge"),
+    t("cleanup", "Clean up temporary files", "sparkles"),
+    "-",
+    { label: "Maintenance…", icon: "wrench", run: () => openDevice(a.id, "maintenance") },
+    { label: "Apply changes…", icon: "layers", run: () => openApply([a.id]) },
+    { label: "Install software…", icon: "package", run: () => openInstall({ ids: [a.id] }) },
+    { label: "Restart…", icon: "power", run: () => openTasks({ ids: [a.id], task: "restart" }) },
+    "-",
+    { label: "Open", icon: "monitor", run: () => openDevice(a.id) },
+  ]);
+}
+
 // ------------------------------------------------------------ attention --
 /** What needs a look on a PC, most serious first. */
 function issuesOf(a) {
@@ -701,7 +820,7 @@ function renderDashboard(main) {
         h("div", { class: "card-head" }, h("h3", {}, "Recent activity"), h("span", { class: "spacer" }), h("button", { class: "btn ghost small", onclick: () => go("activity") }, "All activity", icon("chevronRight", 14))),
         jobs.length
           ? jobs.slice(0, 7).map((j) => h("button", { class: "act-row", onclick: () => openJob(j.id) },
-              h("span", { class: "grow" }, h("b", {}, j.title), h("span", { class: "sub" }, `${ago(j.created_at)} · ${plural(Object.keys(j.targets).length, "computer")}${j.by ? ` · ${j.by}` : ""}`)),
+              h("span", { class: "grow" }, h("b", {}, j.title), jobResultLine(j), h("span", { class: "sub" }, `${ago(j.created_at)} · ${plural(Object.keys(j.targets).length, "computer")}${j.by ? ` · ${j.by}` : ""}`)),
               summaryBar(j, false),
               statePill(overallState(j))))
           : h("div", { class: "empty-state" }, h("span", { class: "es-ico" }, icon("activity", 28)), h("b", {}, "Nothing yet"), h("span", {}, "Installs, tasks and scripts show up here with a result per computer.")),
@@ -974,7 +1093,7 @@ function renderRows() {
           h("td", { class: "hide-md" }, a.speed?.down != null ? h("span", { class: "net-cell", title: `${ago(a.speed.at)}${a.speed.ping != null ? ` · ${r1(a.speed.ping)} ms` : ""}` }, h("b", {}, Math.round(a.speed.down)), h("span", { class: "sub" }, ` / ${Math.round(a.speed.up ?? 0)} Mbps`),
             Math.max(a.speed.loss ?? 0, a.speed.loss_gw ?? 0) > 0 ? h("span", { class: `badge ${lossTone(Math.max(a.speed.loss ?? 0, a.speed.loss_gw ?? 0)) === "bad" ? "bad" : "warn"}`, style: { marginLeft: "6px" }, title: `Packet loss: internet ${a.speed.loss ?? "—"}%, router ${a.speed.loss_gw ?? "—"}%` }, `${r1(Math.max(a.speed.loss ?? 0, a.speed.loss_gw ?? 0))}% loss`) : null) : h("span", { class: "sub" }, "—")),
           h("td", { class: "hide-lg" }, h("span", { class: "mono" }, a.agent_version || "—"), a.outdated ? h("span", { class: "badge warn", style: { marginLeft: "6px" } }, "update") : null),
-          h("td", { class: "act" }, h("span", { class: "row-go" }, icon("chevronRight", 16))),
+          h("td", { class: "act" }, h("button", { class: "icon-btn row-menu", title: "Quick actions", onclick: (e) => { e.stopPropagation(); pcQuickMenu(e.currentTarget, a); } }, icon("more", 18))),
         );
       }),
     );
@@ -1320,8 +1439,10 @@ function openInstall({ mode, ids, installerId } = {}) {
 // ---- job detail ----
 function openJob(id) {
   const open = new Set();
+  const closed = new Set();
   const d = {
-    title: "Action",
+    title: "Result",
+    jobId: id,
     async render() {
       const j = S.jobs.get(id);
       if (!j) return closeDrawer();
@@ -1335,12 +1456,19 @@ function openJob(id) {
       if (!j) return;
       const det = d.detail ?? j;
       const rows = Object.entries(j.targets).sort(([, a], [, b]) => order(a.state) - order(b.state) || a.hostname.localeCompare(b.hostname));
-      put(d.body, 
-        h("h3", {}, j.title),
-        h("div", { class: "sub" }, `${new Date(j.created_at).toLocaleString()} · by ${j.by || "—"}`),
-        j.detail ? h("pre", { class: "mono", style: { whiteSpace: "pre-wrap", background: "var(--surface-2)", padding: "10px", borderRadius: "8px" } }, j.detail) : null,
-        det.script ? h("details", { style: { marginTop: "10px" } }, h("summary", { class: "sub" }, "Script that ran"), h("pre", { class: "mono script-view" }, det.script)) : null,
+      const res = jobResult(j);
+      // Output shown without a click when there is one PC, or for failures.
+      const isOpen = (aid, t) => open.has(aid) || (!closed.has(aid) && (rows.length === 1 || t.state === "failed"));
+      put(d.body,
+        h("div", { class: `result-banner ${res.tone}` },
+          h("span", { class: "rb-ico" }, icon({ ok: "checkCircle", bad: "alert", warn: "clock", running: "activity" }[res.tone] ?? "activity", 26)),
+          h("div", { class: "grow" },
+            h("div", { class: "rb-title" }, res.headline),
+            res.text ? h("div", { class: "rb-text" }, res.text) : null,
+            h("div", { class: "rb-meta" }, j.title, " · ", new Date(j.created_at).toLocaleString(), " · by ", j.by || "—"))),
         summaryBar(j, true),
+        j.detail ? h("details", { style: { marginTop: "12px" } }, h("summary", { class: "sub" }, "What was sent"), h("pre", { class: "mono script-view" }, j.detail)) : null,
+        det.script ? h("details", { style: { marginTop: "6px" } }, h("summary", { class: "sub" }, "Script that ran"), h("pre", { class: "mono script-view" }, det.script)) : null,
         h(
           "div",
           { class: "card card-pad", style: { marginTop: "14px" } },
@@ -1349,11 +1477,11 @@ function openJob(id) {
             const pr = h("div", { class: "progress" }, h("i", { style: { width: `${Math.round((t.progress ?? 0) * 100)}%` } }));
             return h(
               "div",
-              { class: "target" },
+              { class: `target t-${t.state}` },
               h(
                 "div",
                 { class: "head" },
-                h("b", { class: "grow" }, t.hostname),
+                h("b", { class: "grow host-link", title: "Open this computer", onclick: () => openDevice(aid) }, t.hostname),
                 h("span", { class: "spacer" }),
                 t.exit_code != null ? h("span", { class: "sub mono" }, `exit ${t.exit_code}`) : null,
                 statePill(t.state),
@@ -1363,8 +1491,11 @@ function openJob(id) {
               t.state === "sending" ? pr : null,
               out
                 ? h("div", {},
-                    h("button", { class: "btn ghost small", style: { marginTop: "6px" }, onclick: () => { open.has(aid) ? open.delete(aid) : open.add(aid); d.paint(); } }, open.has(aid) ? "Hide details" : "Show details"),
-                    open.has(aid) ? h("pre", {}, out) : null)
+                    h("button", { class: "btn ghost small", style: { marginTop: "6px" }, onclick: () => {
+                      if (isOpen(aid, t)) { open.delete(aid); closed.add(aid); } else { closed.delete(aid); open.add(aid); }
+                      d.paint();
+                    } }, isOpen(aid, t) ? "Hide full output" : "Show full output"),
+                    isOpen(aid, t) ? h("pre", { class: "out" }, out) : null)
                 : null,
             );
           }),
@@ -1451,7 +1582,8 @@ async function quickTask(ids, task, options = {}) {
   try {
     const { job } = await api("POST", "/api/jobs", { kind: "task", targets: ids, wait_offline: false, payload: { task, options } });
     S.jobs.set(job.id, job);
-    toast(`${job.title}: started`);
+    watchJob(job);
+    notify({ title: `${job.title}: started`, text: `on ${ids.length === 1 ? S.agents.get(ids[0])?.hostname ?? "1 computer" : plural(ids.length, "computer")} — the result pops up here when it's done`, tone: "running", actionLabel: "Follow", action: () => openJob(job.id), timeout: 5000 });
     schedule();
     return job;
   } catch (e) {
@@ -1556,6 +1688,7 @@ function mountDevice(mainEl, id, startTab = "overview") {
   let detail = null;
   let shot = null;
   let swQuery = "";
+  let swReloading = false;
   let met = null; // /api/agents/:id/metrics
   let metKey = "";
   // Accounts tab: { list, at, loading, error, form }
@@ -2108,7 +2241,9 @@ function mountDevice(mainEl, id, startTab = "overview") {
         const list = (detail?.software ?? []).filter((s) => !swQuery || s.name.toLowerCase().includes(swQuery.toLowerCase())).sort((x, y) => x.name.localeCompare(y.name));
         content = [
           h("input", { type: "search", class: "sw-search", placeholder: "Search programs…", value: swQuery, oninput: (e) => { swQuery = e.target.value; const pos = e.target.selectionStart; d.paint(); const i = $(".pc-page .sw-search"); i?.focus(); i?.setSelectionRange(pos, pos); } }),
-          detail?.software_at ? h("div", { class: "sub", style: { margin: "6px 0" } }, `List from ${ago(detail.software_at)}`) : null,
+          h("div", { class: "row", style: { margin: "8px 0" } },
+            h("span", { class: "sub grow" }, swReloading ? "Asking the PC for its programs…" : detail?.software_at ? `List from ${ago(detail.software_at)} · ${plural(list.length, "program")}` : ""),
+            h("button", { class: "btn small", disabled: !a.online || swReloading, title: a.online ? "Read the installed programs from the PC again" : "The PC is offline", onclick: reloadPrograms }, icon("refresh", 14), swReloading ? "Reloading…" : "Reload")),
           list.map((s) =>
             h(
               "div",
@@ -2156,6 +2291,27 @@ function mountDevice(mainEl, id, startTab = "overview") {
       if (settleToggles() || (!typing && tab !== "software" && !(tab === "accounts" && acc.form))) d.paint();
     },
   };
+  /** Ask the PC for a fresh program list and show it when it arrives. */
+  async function reloadPrograms() {
+    const before = detail?.software_at ?? null;
+    swReloading = true;
+    d.paint();
+    try {
+      await api("POST", `/api/agents/${id}/refresh`);
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const fresh = await api("GET", `/api/agents/${id}`);
+        if (fresh.software_at !== before) {
+          detail = fresh;
+          break;
+        }
+      }
+    } catch (e) {
+      fail(e);
+    }
+    swReloading = false;
+    if (S.page === d) d.paint();
+  }
   async function takeShot() {
     toast("Taking a screenshot — the user is notified");
     try {
@@ -2178,7 +2334,9 @@ async function createJob(body) {
   try {
     const { job } = await api("POST", "/api/jobs", body);
     S.jobs.set(job.id, job);
+    watchJob(job);
     openJob(job.id);
+    return job;
   } catch (e) {
     fail(e);
   }
@@ -2192,92 +2350,104 @@ function targetLine(ids) {
 const POWER = new Set(["restart", "shutdown", "cancel_power"]);
 function openTasks({ ids, task } = {}) {
   const tg = newTargets(ids);
-  const st = { task: task ?? "check_updates", waitOffline: true, delay: 5, message: "" };
-  const byId = new Map(S.tasks.map((t) => [t.id, t]));
-  const choose = (id) => {
-    st.task = id;
-    const t = byId.get(id);
-    st.waitOffline = !POWER.has(id); // a restart queued for days would surprise people
-    st.delay = t.options?.delay_min ?? 5;
-    st.message = t.options?.message ?? "";
-    d.render();
+  const st = { waitOffline: true, open: task ?? null, opts: {} };
+  /** task id → job id of what was started from this panel. */
+  const started = new Map();
+  const optsFor = (t) => (st.opts[t.id] ??= { delay: t.options?.delay_min ?? 5, message: t.options?.message ?? "", asr: t.options?.asr, cfa: !!t.options?.controlled_folders });
+  async function run(t) {
+    const n = targetIds(tg).length;
+    if (!n) return toast("Choose computers first", true);
+    const o = optsFor(t);
+    if ((t.id === "restart" || t.id === "shutdown") && !confirm(`${t.label}: ${plural(n, "computer")} in ${o.delay} min?`)) return;
+    const options = t.choices?.asr ? { asr: o.asr, controlled_folders: !!o.cfa } : t.options ? { delay_min: Number(o.delay) || 0, message: o.message } : {};
+    try {
+      // A restart queued for days would surprise people: power tasks never wait.
+      const { job } = await api("POST", "/api/jobs", { kind: "task", targets: targetParam(tg), wait_offline: st.waitOffline && !POWER.has(t.id), payload: { task: t.id, options } });
+      S.jobs.set(job.id, job);
+      watchJob(job);
+      started.set(t.id, job.id);
+      st.open = null;
+      d.render();
+    } catch (e) {
+      fail(e);
+    }
+  }
+  const statusOf = (t) => {
+    const jid = started.get(t.id);
+    const j = jid && S.jobs.get(jid);
+    return j ? h("button", { class: "task-status", onclick: () => openJob(j.id), title: "Show the result" }, jobResultLine(j), icon("chevronRight", 14)) : null;
+  };
+  const optionsForm = (t) => {
+    const o = optsFor(t);
+    return h(
+      "div",
+      { class: "task-opts" },
+      t.choices?.asr
+        ? [
+            h("label", { class: "field" }, "Attack surface reduction rules"),
+            h("select", { onchange: (e) => (o.asr = e.target.value) }, Object.entries(t.choices.asr).map(([k, v]) => h("option", { value: k, selected: o.asr === k }, v))),
+            h("label", { class: "check", style: { marginTop: "8px" } }, h("input", { type: "checkbox", checked: o.cfa, onchange: (e) => (o.cfa = e.target.checked) }),
+              h("span", {}, "Controlled folder access (ransomware protection)", h("small", {}, "Can stop ordinary programs from saving into Documents/Desktop until allowed — try one PC first."))),
+          ]
+        : h("div", { class: "grid2" },
+            h("div", {}, h("label", { class: "field" }, "Warning time (minutes)"), h("input", { type: "text", value: String(o.delay), oninput: (e) => (o.delay = e.target.value) })),
+            h("div", {}, h("label", { class: "field" }, "Message to the user"), h("input", { type: "text", value: o.message, oninput: (e) => (o.message = e.target.value) }))),
+      h("div", { class: "row", style: { marginTop: "10px" } },
+        h("button", { class: `btn primary${POWER.has(t.id) ? " danger-fill" : ""}`, onclick: () => run(t) }, icon("play", 14), `Start ${t.label.toLowerCase()}`),
+        h("button", { class: "btn ghost", onclick: () => { st.open = null; d.render(); } }, "Cancel")),
+    );
   };
   const d = {
     title: "Maintenance",
     render() {
-      const t = byId.get(st.task);
+      const n = targetIds(tg).length;
       const groups = [...new Set(S.tasks.map((x) => x.group))];
       put(
         d.body,
-        h(
-          "div",
-          { class: "step" },
-          h("div", { class: "step-title" }, h("span", { class: "step-num" }, "1"), "Task"),
-          groups.map((g) =>
-            h(
-              "div",
-              {},
-              h("div", { class: "sub", style: { margin: "10px 0 6px", fontWeight: "600" } }, g),
-              h("div", { class: "lib" }, S.tasks.filter((x) => x.group === g).map((x) =>
-                h("button", { class: `lib-item${st.task === x.id ? " active" : ""}`, onclick: () => choose(x.id) },
-                  h("span", { class: "name" }, x.label),
-                  h("span", { class: "sub" }, x.minutes >= 30 ? `up to ${x.minutes >= 60 ? `${Math.round(x.minutes / 60)} h` : `${x.minutes} min`}` : "")),
-              )),
-            ),
-          ),
-          h("div", { class: "note info" }, t.help),
-          t.choices?.asr
-            ? h(
-                "div",
-                { style: { marginTop: "10px" } },
-                h("label", { class: "field" }, "Attack surface reduction rules"),
-                h("select", { onchange: (e) => (st.asr = e.target.value) }, Object.entries(t.choices.asr).map(([k, v]) => h("option", { value: k, selected: (st.asr ?? t.options.asr) === k }, v))),
-                h("label", { class: "check", style: { marginTop: "8px" } }, h("input", { type: "checkbox", checked: !!st.cfa, onchange: (e) => (st.cfa = e.target.checked) }),
-                  h("span", {}, "Controlled folder access (ransomware protection)", h("small", {}, "Can stop ordinary programs from saving into Documents/Desktop until allowed — try one PC first."))),
-              )
-            : t.options
-            ? h(
-                "div",
-                { class: "grid2", style: { marginTop: "10px" } },
-                h("div", {}, h("label", { class: "field" }, "Warning time (minutes)"), h("input", { type: "text", value: String(st.delay), oninput: (e) => (st.delay = e.target.value) })),
-                h("div", {}, h("label", { class: "field" }, "Message to the user"), h("input", { type: "text", value: st.message, oninput: (e) => (st.message = e.target.value) })),
-              )
-            : null,
-        ),
-        h("div", { class: "step" }, h("div", { class: "step-title" }, h("span", { class: "step-num" }, "2"), "Computers"), targetPicker(tg, () => d.render())),
-        h(
-          "label",
-          { class: "check" },
-          h("input", { type: "checkbox", checked: st.waitOffline, onchange: (e) => { st.waitOffline = e.target.checked; d.footerRender(); } }),
-          h("span", {}, "Run on offline computers when they come back"),
-        ),
+        h("div", { class: "task-targets" },
+          h("div", { class: "step-title" }, icon("monitor", 16), "Run on"),
+          targetPicker(tg, () => d.render()),
+          h("label", { class: "check" }, h("input", { type: "checkbox", checked: st.waitOffline, onchange: (e) => { st.waitOffline = e.target.checked; d.render(); } }), h("span", {}, "Offline computers run it when they connect", h("small", {}, offlineNote(tg, st.waitOffline))))),
+        h("p", { class: "sub", style: { margin: "4px 0 12px" } }, "Click Run: the task starts at once and its result appears in its row. Run as many as you like."),
+        groups.map((g) =>
+          h("section", { class: "task-group" },
+            h("div", { class: "task-gtitle" }, g),
+            S.tasks.filter((x) => x.group === g).map((t) => {
+              const jid = started.get(t.id);
+              const running = jid && !jobResult(S.jobs.get(jid) ?? { targets: {}, counts: {} }).done;
+              return h("div", { class: `task-row${st.open === t.id ? " open" : ""}`, id: `task-${t.id}` },
+                h("div", { class: "task-main" },
+                  h("div", { class: "grow" },
+                    h("b", {}, t.label, t.minutes >= 30 ? h("span", { class: "sub" }, ` · up to ${t.minutes >= 60 ? `${Math.round(t.minutes / 60)} h` : `${t.minutes} min`}`) : null),
+                    h("div", { class: "sub task-help", title: t.help }, t.help),
+                    h("div", { class: "task-status-slot", "data-task": t.id }, statusOf(t))),
+                  h("button", {
+                    class: `btn small${t.options ? "" : " primary"}`,
+                    disabled: !n || running,
+                    title: n ? "" : "Choose computers first",
+                    onclick: () => (t.options ? ((st.open = st.open === t.id ? null : t.id), d.render()) : run(t)),
+                  }, running ? "Running…" : t.options ? "Run…" : jid ? "Run again" : "Run")),
+                st.open === t.id ? optionsForm(t) : null);
+            }))),
       );
-      d.footerRender();
-    },
-    footerRender() {
-      const n = targetIds(tg).length;
-      const t = byId.get(st.task);
-      put(
-        d.footer,
-        h(
-          "button",
-          {
-            class: "btn primary big",
-            disabled: !n,
-            onclick: async (e) => {
-              if ((st.task === "restart" || st.task === "shutdown") && !confirm(`${t.label} ${plural(n, "computer")} in ${st.delay} min?`)) return;
-              e.target.disabled = true;
-              const options = t.choices?.asr ? { asr: st.asr ?? t.options.asr, controlled_folders: !!st.cfa } : t.options ? { delay_min: Number(st.delay) || 0, message: st.message } : {};
-              await createJob({ kind: "task", targets: targetParam(tg), wait_offline: st.waitOffline, payload: { task: st.task, options } });
-            },
-          },
-          n ? `${t.label} on ${plural(n, "computer")}` : "Choose computers",
-        ),
-        h("span", { class: "sub" }, offlineNote(tg, st.waitOffline)),
-      );
+      put(d.footer, h("span", { class: "sub" }, n ? `Tasks go to ${plural(n, "computer")}.` : "Choose computers above."), h("span", { class: "spacer" }), h("button", { class: "btn", onclick: () => go("activity") }, "Activity"));
+      if (st.open) setTimeout(() => $(`#task-${st.open}`)?.scrollIntoView({ block: "nearest" }), 0);
     },
     live() {
-      d.footerRender();
+      // Only the result lines change; leave option fields being typed in alone.
+      for (const slot of d.body.querySelectorAll(".task-status-slot")) {
+        const t = S.tasks.find((x) => x.id === slot.dataset.task);
+        if (t && started.has(t.id)) put(slot, statusOf(t));
+      }
+      for (const [tid, jid] of started) {
+        const btn = d.body.querySelector(`#task-${tid} .task-main > .btn`);
+        const t = S.tasks.find((x) => x.id === tid);
+        if (btn && t) {
+          const running = !jobResult(S.jobs.get(jid) ?? { targets: {}, counts: {} }).done;
+          btn.disabled = running || !targetIds(tg).length;
+          btn.textContent = running ? "Running…" : t.options ? "Run…" : "Run again";
+        }
+      }
       $("#target-seg", d.body)?.replaceWith(targetPicker(tg, () => d.render()));
     },
   };
@@ -3117,7 +3287,7 @@ function renderActivity(main) {
             h(
               "div",
               { class: "job", onclick: () => openJob(j.id) },
-              h("div", { class: "grow" }, h("div", { class: "title" }, j.title), h("div", { class: "sub" }, `${ago(j.created_at)} · ${plural(Object.keys(j.targets).length, "computer")}${j.by ? ` · ${j.by}` : ""}`)),
+              h("div", { class: "grow" }, h("div", { class: "title" }, j.title), jobResultLine(j), h("div", { class: "sub" }, `${ago(j.created_at)} · ${plural(Object.keys(j.targets).length, "computer")}${j.by ? ` · ${j.by}` : ""}`)),
               summaryBar(j, false),
               statePill(overallState(j)),
             ),
@@ -3127,6 +3297,11 @@ function renderActivity(main) {
     h("h3", { style: { margin: "24px 0 10px" } }, "Log"),
     h("div", { class: "card log" }, [...S.log].reverse().slice(0, 200).map((l) => h("div", {}, h("time", {}, new Date(l.at).toLocaleTimeString()), l.message))),
   );
+}
+/** The result in one coloured line, for lists. */
+function jobResultLine(j) {
+  const r = jobResult(j);
+  return h("span", { class: `job-result ${r.tone}` }, icon({ ok: "checkCircle", bad: "alert", warn: "clock", running: "activity" }[r.tone] ?? "activity", 13), h("span", {}, r.headline, r.text ? h("span", { class: "jr-text" }, ` — ${r.text}`) : null));
 }
 function overallState(j) {
   const c = j.counts;

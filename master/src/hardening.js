@@ -277,6 +277,17 @@ function Unlock-Service($n) {
   if ($LASTEXITCODE -eq 0) { '  service permissions of ' + $n + ' restored' } else { '  could not restore the service permissions of ' + $n + ' (sc.exe sdset exit ' + $LASTEXITCODE + ')' }
 }`;
 
+/** Why a service won't start, in Windows' own words: the newest Service
+ * Control Manager warning or error about it from the last day. */
+export const SERVICE_PROBLEM = String.raw`function Get-ServiceProblem($n) {
+  try {
+    $disp = (Get-Service -Name $n -ErrorAction Stop).DisplayName
+    $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = (Get-Date).AddDays(-1) } -MaxEvents 400 -ErrorAction Stop |
+      Where-Object { $_.Level -le 3 -and ($_.Message -match [regex]::Escape($disp) -or $_.Message -match ('\b' + $n + '\b')) } | Select-Object -First 1
+    if ($ev) { 'Windows says (' + $ev.TimeCreated.ToString('yyyy-MM-dd HH:mm') + ', event ' + $ev.Id + '): ' + (($ev.Message -split '\r?\n')[0]).Trim() }
+  } catch {}
+}`;
+
 /** Repair Windows Update: services, blocking policies, caches. */
 export function repairUpdatesScript() {
   return String.raw`[Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -300,8 +311,74 @@ foreach ($n in @('wuauserv', 'BITS', 'CryptSvc', 'TrustedInstaller', 'UsoSvc', '
     }
     if ($rc -eq 0) { $fixed++; 'Service ' + $n + ' was disabled - set to manual start.' } else { 'Service ' + $n + ': could not re-enable (sc.exe exit ' + $rc + ').' }
   }
-  $img = [string](Get-Reg ('SYSTEM\CurrentControlSet\Services\' + $n) 'ImagePath')
-  if ($n -in 'wuauserv', 'BITS', 'CryptSvc', 'UsoSvc', 'DoSvc' -and $img -and $img -notmatch 'svchost\.exe') { 'Service ' + $n + ' points to an unexpected program (' + $img + ') - check this PC for an update blocker.' }
+}
+# What blockers change besides the start type: the program a service runs
+# (ImagePath), the DLL svchost loads for it (ServiceDll), the account it runs
+# as, its place in the svchost group, or the DLL file itself. Any of these
+# gives "did not respond in a timely fashion" (0x8007041D) or similar.
+$defaults = [ordered]@{
+  wuauserv = @('%systemroot%\system32\svchost.exe -k netsvcs -p', '%systemroot%\system32\wuaueng.dll', 'LocalSystem', 'netsvcs')
+  BITS     = @('%SystemRoot%\System32\svchost.exe -k netsvcs -p', '%SystemRoot%\System32\qmgr.dll', 'LocalSystem', 'netsvcs')
+  UsoSvc   = @('%systemroot%\system32\svchost.exe -k netsvcs -p', '%systemroot%\system32\usosvc.dll', 'LocalSystem', 'netsvcs')
+  CryptSvc = @('%SystemRoot%\system32\svchost.exe -k NetworkService -p', '%SystemRoot%\system32\cryptsvc.dll', 'NT Authority\NetworkService', 'NetworkService')
+  DoSvc    = @('%SystemRoot%\System32\svchost.exe -k NetworkService -p', '%SystemRoot%\system32\dosvc.dll', 'NT Authority\NetworkService', 'NetworkService')
+}
+$missingDll = New-Object System.Collections.Generic.List[string]
+function Repair-ServiceConfig($n, $want) {
+  $key = 'SYSTEM\CurrentControlSet\Services\' + $n
+  $k = $hklm.OpenSubKey($key, $true)
+  if (-not $k) { return }
+  try {
+    $img = [string]$k.GetValue('ImagePath')
+    if ($img -notmatch 'svchost\.exe') {
+      $k.SetValue('ImagePath', $want[0], 'ExpandString'); $script:fixed++
+      'Service ' + $n + ' was pointed to "' + $img + '" - restored the Windows default.'
+    }
+    $acct = [string]$k.GetValue('ObjectName')
+    if ($acct -and $acct -ne $want[2]) { $k.SetValue('ObjectName', $want[2], 'String'); $script:fixed++; 'Service ' + $n + ' ran as "' + $acct + '" - set back to ' + $want[2] + '.' }
+  } finally { $k.Close() }
+  $wantDll = [Environment]::ExpandEnvironmentVariables($want[1])
+  # Most services keep ServiceDll under Parameters; some (DoSvc) on the service key itself.
+  $params = $hklm.OpenSubKey($key + '\Parameters'); $hasParams = $null -ne $params; if ($params) { $params.Close() }
+  $main = $hklm.OpenSubKey($key); $onMain = $null -ne $main.GetValue('ServiceDll'); $main.Close()
+  $p = $hklm.CreateSubKey($(if (-not $hasParams -and $onMain) { $key } else { $key + '\Parameters' }))
+  try {
+    $dll = [Environment]::ExpandEnvironmentVariables([string]$p.GetValue('ServiceDll', '', 'DoNotExpandEnvironmentNames'))
+    if (-not (Test-Path $wantDll)) { $script:missingDll.Add($wantDll); 'Service ' + $n + ': ' + $wantDll + ' is MISSING (renamed or deleted by an update blocker).' }
+    elseif (-not $dll -or [IO.Path]::GetFileName($dll) -ne [IO.Path]::GetFileName($wantDll) -or -not (Test-Path $dll)) {
+      $p.SetValue('ServiceDll', $want[1], 'ExpandString'); $script:fixed++
+      'Service ' + $n + ' loaded "' + $(if ($dll) { $dll } else { '(nothing)' }) + '" - restored ' + $wantDll + '.'
+    }
+  } finally { $p.Close() }
+}
+foreach ($n in $defaults.Keys) {
+  if (-not (Get-Service -Name $n -ErrorAction SilentlyContinue)) { continue }
+  try { Repair-ServiceConfig $n $defaults[$n] }
+  catch {
+    # Locked even though it was not disabled: unlock, then try again.
+    Unlock-Service $n | Out-Null
+    try { Repair-ServiceConfig $n $defaults[$n] } catch { 'Service ' + $n + ': could not check its settings: ' + $_.Exception.Message.Trim() }
+  }
+}
+# svchost only hosts services listed in their group; a service removed from
+# it never starts (it times out).
+try {
+  $sv = $hklm.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion\Svchost', $true)
+  foreach ($n in $defaults.Keys) {
+    $g = $defaults[$n][3]
+    $list = @($sv.GetValue($g))
+    if ($list.Count -and $list -notcontains $n -and (Get-Service -Name $n -ErrorAction SilentlyContinue)) {
+      $sv.SetValue($g, [string[]]($list + $n), 'MultiString'); $fixed++
+      'Service ' + $n + ' was missing from the ' + $g + ' service group - added back.'
+    }
+  }
+  $sv.Close()
+} catch { 'Could not check the svchost service groups: ' + $_.Exception.Message.Trim() }
+if ($missingDll.Count) {
+  # The component store keeps a copy of every system file; sfc puts it back.
+  'Restoring missing system files with sfc /scannow (5-30 minutes)...'
+  & "$env:windir\System32\sfc.exe" /scannow | Out-Null
+  foreach ($f in $missingDll) { if (Test-Path $f) { $fixed++; 'Restored ' + $f + '.' } else { $f + ' is still missing - run "Repair Windows image (DISM)" and then this again.' } }
 }
 # Policies that cut Windows Update off. Left alone on domain PCs: there they
 # come from group policy, which would put them back.
@@ -335,9 +412,17 @@ foreach ($d in @("$env:windir\SoftwareDistribution", "$env:windir\System32\catro
 # Older copies from earlier repairs.
 Get-ChildItem "$env:windir\SoftwareDistribution.old-*", "$env:windir\System32\catroot2.old-*" -Directory -ErrorAction SilentlyContinue |
   Sort-Object Name -Descending | Select-Object -Skip 1 | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-foreach ($n in @('CryptSvc', 'BITS', 'wuauserv')) { Start-Service -Name $n -ErrorAction SilentlyContinue }
+${SERVICE_PROBLEM}
+foreach ($n in @('CryptSvc', 'BITS', 'wuauserv')) {
+  try { Start-Service -Name $n -ErrorAction Stop }
+  catch { Start-Sleep -Seconds 5; try { Start-Service -Name $n -ErrorAction Stop } catch {} }
+}
 $bad = @(foreach ($n in @('wuauserv', 'BITS', 'CryptSvc')) { if ((Get-Service $n).Status -ne 'Running') { $n } })
-if ($bad.Count) { 'Not running after the repair: ' + ($bad -join ', '); exit 1 }
+if ($bad.Count) {
+  foreach ($n in $bad) { Get-ServiceProblem $n }
+  'Not running after the repair: ' + ($bad -join ', ') + '. A restart of the PC often finishes the repair - then run this again.'
+  exit 1
+}
 # A search proves it works.
 try {
   $s = New-Object -ComObject Microsoft.Update.Session; $s.ClientApplicationID = 'FleetView'

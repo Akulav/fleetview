@@ -293,6 +293,7 @@ if ($chromium) {
 'Running: ' + $file + ' ' + $argv
 $sp = @{ FilePath = $file; PassThru = $true; WindowStyle = 'Hidden' }
 if ($argv) { $sp.ArgumentList = $argv }
+$started = Get-Date
 $p = Start-Process @sp
 $h = $p.Handle # keeps the exit code readable after the process ends
 if (-not $p.WaitForExit(@MINS@ * 60000)) {
@@ -306,6 +307,17 @@ $ok = @(0, 1641, 3010)
 # Chromium-style installers report a finished uninstall as 19.
 if ($chromium) { $ok += 19 }
 if ($code -notin $ok) {
+  if ($chromium) {
+    # These installers say why in their own log (--verbose-logging): show its end.
+    $dirs = @("$env:windir\SystemTemp", "$env:windir\Temp", $env:TEMP, "$env:ProgramData\Microsoft\EdgeUpdate\Log", (Split-Path $file -Parent))
+    $log = @(foreach ($d in $dirs) { if ($d -and (Test-Path $d)) { Get-ChildItem -Path $d -Filter '*.log' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'install|setup|copilot|edge' -and $_.LastWriteTime -ge $started.AddMinutes(-1) } } }) |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($log) {
+      '--- end of ' + $log.FullName + ' ---'
+      Get-Content -Path $log.FullName -Tail 25 -ErrorAction SilentlyContinue
+      '---'
+    } else { '(no installer log found to explain it)' }
+  }
   $why = @{ 7 = 'install failed'; 14 = 'insufficient rights'; 15 = 'not installed'; 16 = 'the program is running - close it first'; 20 = 'uninstall failed'; 21 = 'uninstall was cancelled' }
   'The uninstaller failed with exit code ' + $code + $(if ($argv -match '--uninstall' -and $why[[int]$code]) { ' (' + $why[[int]$code] + ')' } else { '' }) + '.'
   exit $code

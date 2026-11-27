@@ -709,7 +709,7 @@ function summarize(job, r) {
   if (r.success) return (job.kind === "script" && !job.payload?.script_id ? "done" : last || "done").slice(0, 300);
   if (job.kind === "task") {
     const meaning = TASKS[job.payload.task]?.failMeaning;
-    if (r.exit_code === 1 && meaning) return meaning;
+    if (r.exit_code === 1 && meaning) return `${meaning}${last && last !== meaning ? ` — ${last}` : ""}`.slice(0, 300);
   }
   return `${err || last || "failed"}`.slice(0, 300) + (r.exit_code !== null && !err ? ` (exit ${r.exit_code})` : "");
 }

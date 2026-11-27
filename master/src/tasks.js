@@ -2,7 +2,7 @@
 // or the whole fleet. Each script prints a short human summary and exits
 // non-zero when something needs attention, so Activity shows Done/Failed per PC.
 
-import { baselineScript, securityStatusScript, repairUpdatesScript, adblockScript, ASR_MODES } from "./hardening.js";
+import { baselineScript, securityStatusScript, repairUpdatesScript, adblockScript, ASR_MODES, SERVICE_PROBLEM } from "./hardening.js";
 import { perfScript, speedScript } from "./metrics.js";
 
 const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
@@ -13,7 +13,8 @@ const UTF8 = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$ErrorActionPre
 // services; the Update Agent then fails with 0x80070422 ("The service cannot
 // be started, either because it is disabled..."). Re-enable them first, as
 // Windows ships them (manual start), and say so.
-const WU_SERVICES = String.raw`function Repair-WuServices {
+const WU_SERVICES = String.raw`${SERVICE_PROBLEM}
+function Repair-WuServices {
   foreach ($n in @('wuauserv', 'BITS', 'CryptSvc', 'TrustedInstaller', 'UsoSvc', 'DoSvc')) {
     $s = Get-Service -Name $n -ErrorAction SilentlyContinue
     if (-not $s -or [string]$s.StartType -ne 'Disabled') { continue }
@@ -22,7 +23,7 @@ const WU_SERVICES = String.raw`function Repair-WuServices {
     elseif ($LASTEXITCODE -eq 5) { 'Service ' + $n + ' is disabled and LOCKED by an update blocker (access denied) - run "Repair Windows Update".' }
     else { 'Service ' + $n + ' is disabled and could not be re-enabled (sc.exe exit ' + $LASTEXITCODE + ').' }
   }
-  try { Start-Service wuauserv -ErrorAction Stop } catch { 'Could not start the Windows Update service: ' + $_.Exception.Message }
+  try { Start-Service wuauserv -ErrorAction Stop } catch { 'Could not start the Windows Update service: ' + $_.Exception.Message; Get-ServiceProblem 'wuauserv' }
 }
 function Show-WuPolicies {
   $p = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
@@ -107,7 +108,7 @@ exit $(if ($failed -gt 0) { 1 } else { 0 })`,
     label: "Repair Windows Update",
     group: "Windows Update",
     help: "Re-enables Windows Update services that debloat tools disabled, removes policies that block Windows Update (not on domain PCs), switches away from a WSUS server that no longer answers, resets the download cache and catalog, then checks that searching works.",
-    minutes: 20,
+    minutes: 60, // sfc can run when a system file is missing
     script: () => `${UTF8}\n${repairUpdatesScript()}`,
   },
   security_baseline: {
@@ -123,7 +124,7 @@ exit $(if ($failed -gt 0) { 1 } else { 0 })`,
     group: "Security",
     help: "Read-only: shows which protections are on (Defender modules, Tamper Protection, signatures, firewall, SmartScreen, UAC, SMBv1, AutoRun, Guest, BitLocker). Failed = something is off.",
     minutes: 5,
-    failMeaning: "some protection is off (see details)",
+    failMeaning: "some protection is off",
     script: () => securityStatusScript(),
   },
   adblock: {

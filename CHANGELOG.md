@@ -85,6 +85,16 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   line is loaded, so loss on the local network / Wi-Fi is told apart from loss on the provider's line (with
   average ping and jitter). Shown on the PC page with a plain explanation, as a badge in the list, red in the
   speed history, and 2 % or more puts the PC in *Needs attention*.
+- **Results you can't miss:** anything started from the console pops up a notification when it finishes — green
+  done / red failed / amber waiting, with the result line and *Show result*. The result panel opens with a
+  coloured outcome banner, each PC's result in colour, and the full output already open for one PC or for
+  failures. Activity and the dashboard show every job's result line, not just a state.
+- **Fewer clicks:** the Maintenance panel lists every task with its own **Run** button (tasks with options
+  open them inline), stays open, and shows each started task's live result in its row; every row of the
+  Computers list has a **⋯** menu with the usual tasks (updates, security check, speed test, snapshot,
+  clean-up), Maintenance, Apply, Install, Restart and Open.
+- **Reload** button on a PC's Programs tab.
+- A failed Chromium-style uninstall (Copilot, Edge…) shows the end of the installer's own log.
 - **Maintenance tab** on each PC's page: every task by group with how it last went on that PC — green when done
   (security baseline applied, adblocker installed, updates checked…), amber when it found something (protection
   off, updates waiting), red when it failed — with Run / Run again and Details. "x of y done on this PC" at the
@@ -112,6 +122,11 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   service's registry key back, restores Windows' usual permissions on it and on the service, then re-enables it;
   it also reports a service pointing to an unexpected program. Check / Install updates say when a service is
   locked and point to the repair.
+- **Windows Update "did not respond in a timely fashion" (0x8007041D):** the repair now also puts back what
+  blockers change besides the start type — the service's program (ImagePath), its DLL (ServiceDll, under
+  Parameters or on the service key), the account it runs as and its place in the svchost group — and runs
+  `sfc /scannow` when an update DLL is missing. When a service still won't start, the repair and the update
+  tasks quote Windows' own reason from the event log. The repair may now take up to an hour (sfc).
 - **Performance snapshots failed** on PCs where one measurement wasn't readable: each part is now measured on its
   own (CPU falls back to the processor load when the performance counters are broken), and the output says
   what couldn't be read.
