@@ -213,19 +213,95 @@ try { $bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop; 
 if ($off.Count) { 'Off: ' + ($off -join ', '); exit 1 } else { 'All checked protections are on.' }`;
 }
 
+// Update blockers (Windows Update Blocker and the like) don't just disable
+// the services: they change the service's permissions and its registry key's
+// permissions (and sometimes owner) so that even SYSTEM gets "access denied".
+// Undo that: SYSTEM takes the key back (SeTakeOwnership), restores Windows'
+// usual permissions on it and its subkeys, then restores the service's own
+// security descriptor (the owner may always rewrite it).
+const SERVICE_UNLOCK = String.raw`Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FvPrivilege {
+  [StructLayout(LayoutKind.Sequential, Pack = 1)] struct TokPriv { public int Count; public long Luid; public int Attr; }
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr h, uint access, out IntPtr token);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool LookupPrivilegeValue(string host, string name, out long luid);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool AdjustTokenPrivileges(IntPtr token, bool all, ref TokPriv state, int len, IntPtr prev, IntPtr retLen);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  public static bool Enable(string name) {
+    IntPtr token;
+    if (!OpenProcessToken(GetCurrentProcess(), 0x28, out token)) return false;
+    TokPriv tp; tp.Count = 1; tp.Attr = 2;
+    if (!LookupPrivilegeValue(null, name, out tp.Luid)) return false;
+    return AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+  }
+}
+'@
+function Reset-KeyAcl($hk, $path) {
+  $sys = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
+  $adm = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+  $usr = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')
+  $rw = [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree
+  $k = $hk.OpenSubKey($path, $rw, [System.Security.AccessControl.RegistryRights]::TakeOwnership)
+  $o = New-Object System.Security.AccessControl.RegistrySecurity
+  $o.SetOwner($sys); $k.SetAccessControl($o); $k.Close()
+  $k = $hk.OpenSubKey($path, $rw, [System.Security.AccessControl.RegistryRights]::ChangePermissions)
+  $a = New-Object System.Security.AccessControl.RegistrySecurity
+  $a.SetAccessRuleProtection($false, $false)
+  $ci = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit
+  $np = [System.Security.AccessControl.PropagationFlags]::None
+  $allow = [System.Security.AccessControl.AccessControlType]::Allow
+  $a.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule($sys, 'FullControl', $ci, $np, $allow)))
+  $a.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule($adm, 'FullControl', $ci, $np, $allow)))
+  $a.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule($usr, 'ReadKey', $ci, $np, $allow)))
+  $k.SetAccessControl($a); $k.Close()
+  $k = $hk.OpenSubKey($path)
+  $subs = @(if ($k) { $k.GetSubKeyNames() }); if ($k) { $k.Close() }
+  foreach ($s in $subs) { try { Reset-KeyAcl $hk ($path + '\' + $s) } catch {} }
+}
+function Set-ServiceStart($n, $start) {
+  try {
+    $hk = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')
+    $k = $hk.OpenSubKey('SYSTEM\CurrentControlSet\Services\' + $n, $true)
+    $k.SetValue('Start', [int]$start, 'DWord'); $k.Close(); return $true
+  } catch { return $false }
+}
+function Unlock-Service($n) {
+  try {
+    [void][FvPrivilege]::Enable('SeTakeOwnershipPrivilege'); [void][FvPrivilege]::Enable('SeRestorePrivilege')
+    Reset-KeyAcl ([Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry64')) ('SYSTEM\CurrentControlSet\Services\' + $n)
+    '  registry permissions of ' + $n + ' restored'
+  } catch { '  could not restore the registry permissions of ' + $n + ': ' + $_.Exception.Message.Trim() }
+  # Windows' usual service permissions: SYSTEM and Administrators full, signed-in users may query and start.
+  & sc.exe sdset $n 'D:(A;;CCLCSWRPLORC;;;AU)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)' | Out-Null
+  if ($LASTEXITCODE -eq 0) { '  service permissions of ' + $n + ' restored' } else { '  could not restore the service permissions of ' + $n + ' (sc.exe sdset exit ' + $LASTEXITCODE + ')' }
+}`;
+
 /** Repair Windows Update: services, blocking policies, caches. */
 export function repairUpdatesScript() {
   return String.raw`[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $ErrorActionPreference = 'Continue'
 ${REG}
 $fixed = 0
+${SERVICE_UNLOCK}
 foreach ($n in @('wuauserv', 'BITS', 'CryptSvc', 'TrustedInstaller', 'UsoSvc', 'DoSvc')) {
   $s = Get-Service -Name $n -ErrorAction SilentlyContinue
   if (-not $s) { continue }
   if ([string]$s.StartType -eq 'Disabled') {
     & sc.exe config $n start= demand | Out-Null
-    if ($LASTEXITCODE -eq 0) { $fixed++; 'Service ' + $n + ' was disabled - set to manual start.' } else { 'Service ' + $n + ': could not re-enable (sc.exe exit ' + $LASTEXITCODE + ').' }
+    $rc = $LASTEXITCODE
+    if ($rc -eq 5) {
+      # Access denied even for SYSTEM: an update blocker locked the service.
+      'Service ' + $n + ' is locked (access denied) - restoring its permissions...'
+      Unlock-Service $n
+      & sc.exe config $n start= demand | Out-Null
+      $rc = $LASTEXITCODE
+      if ($rc -ne 0 -and (Set-ServiceStart $n 3)) { $rc = 0 }
+    }
+    if ($rc -eq 0) { $fixed++; 'Service ' + $n + ' was disabled - set to manual start.' } else { 'Service ' + $n + ': could not re-enable (sc.exe exit ' + $rc + ').' }
   }
+  $img = [string](Get-Reg ('SYSTEM\CurrentControlSet\Services\' + $n) 'ImagePath')
+  if ($n -in 'wuauserv', 'BITS', 'CryptSvc', 'UsoSvc', 'DoSvc' -and $img -and $img -notmatch 'svchost\.exe') { 'Service ' + $n + ' points to an unexpected program (' + $img + ') - check this PC for an update blocker.' }
 }
 # Policies that cut Windows Update off. Left alone on domain PCs: there they
 # come from group policy, which would put them back.

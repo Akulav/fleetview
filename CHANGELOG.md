@@ -87,6 +87,11 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   (`--force-uninstall`), stop an uninstaller still running after 15 minutes, and check afterwards that the
   program is really gone (many uninstallers return before they finish). NSIS `uninst.exe` no longer gets Inno
   Setup switches.
+- **Repair Windows Update on PCs with an update blocker:** tools like Windows Update Blocker lock the update
+  services' permissions so even SYSTEM gets "access denied" (`sc.exe exit 5`). The repair now takes the
+  service's registry key back, restores Windows' usual permissions on it and on the service, then re-enables it;
+  it also reports a service pointing to an unexpected program. Check / Install updates say when a service is
+  locked and point to the repair.
 - **Performance snapshots failed** on PCs where one measurement wasn't readable: each part is now measured on its
   own (CPU falls back to the processor load when the performance counters are broken), and the output says
   what couldn't be read.

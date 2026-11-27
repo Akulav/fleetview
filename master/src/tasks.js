@@ -19,6 +19,7 @@ const WU_SERVICES = String.raw`function Repair-WuServices {
     if (-not $s -or [string]$s.StartType -ne 'Disabled') { continue }
     & sc.exe config $n start= demand | Out-Null
     if ($LASTEXITCODE -eq 0) { 'Service ' + $n + ' was DISABLED - set back to manual start.' }
+    elseif ($LASTEXITCODE -eq 5) { 'Service ' + $n + ' is disabled and LOCKED by an update blocker (access denied) - run "Repair Windows Update".' }
     else { 'Service ' + $n + ' is disabled and could not be re-enabled (sc.exe exit ' + $LASTEXITCODE + ').' }
   }
   try { Start-Service wuauserv -ErrorAction Stop } catch { 'Could not start the Windows Update service: ' + $_.Exception.Message }
