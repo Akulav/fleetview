@@ -1,3 +1,5 @@
+import { icon } from "./icons.js";
+
 // FleetView console. Vanilla JS, no build step. All text is inserted as text
 // nodes (never innerHTML), so hostnames / program names can't inject markup.
 
@@ -84,7 +86,7 @@ const S = {
   accountActions: {},
   scripts: [],
   log: [],
-  view: "computers",
+  view: "dashboard",
   filter: "all",
   query: "",
   selected: new Set(),
@@ -288,77 +290,182 @@ function showLogin() {
     err,
     h("div", { style: { marginTop: "12px" } }, btn),
   );
-  put($("#app"), 
-    h("div", { class: "login" }, h("div", { class: "card" }, h("img", { src: "/favicon.png", alt: "" }), h("h1", {}, "FleetView"), h("p", {}, "Sign in to manage your computers."), form)),
+  put($("#app"),
+    h("div", { class: "login" },
+      h("div", { class: "login-art" },
+        h("div", { class: "login-brand" }, h("img", { src: "/favicon.png", alt: "" }), "FleetView"),
+        h("div", { class: "login-pitch" },
+          h("h2", {}, "Every computer in the office, from one place."),
+          h("ul", {},
+            [["download", "Install software silently on one PC or all of them"], ["shieldCheck", "Security baseline, updates and health checks"], ["layers", "Apply many changes to many PCs at once"], ["key", "A shared, end-to-end encrypted password vault"]]
+              .map(([ic, t]) => h("li", {}, h("span", { class: "li-ico" }, icon(ic, 16)), t)))),
+        h("div", { class: "login-foot" }, location.host)),
+      h("div", { class: "login-panel" },
+        h("div", { class: "login-box" }, h("img", { class: "login-logo", src: "/favicon.png", alt: "" }), h("h1", {}, "Sign in"), h("p", {}, "Use your FleetView administrator account."), form))),
   );
   setTimeout(() => pw.focus(), 0);
 }
 
 // ------------------------------------------------------------------ shell --
+// ------------------------------------------------------------------ shell --
+// Sidebar navigation, a header with the page title and search (Ctrl+K), and
+// the page. Pages have their own address (#/computers…), so Back works and
+// pages can be bookmarked.
+const VIEWS = {
+  dashboard: { label: "Home", icon: "home", section: "" },
+  computers: { label: "Computers", icon: "monitor", section: "Devices" },
+  apply: { label: "Apply changes", icon: "layers", section: "Devices" },
+  activity: { label: "Activity", icon: "activity", section: "Devices" },
+  scripts: { label: "Scripts", icon: "terminal", section: "Configure" },
+  startup: { label: "Startup apps", icon: "zap", section: "Configure" },
+  vault: { label: "Passwords", icon: "key", section: "Security" },
+  settings: { label: "Settings", icon: "settings", section: "Admin" },
+};
+function viewFromHash() {
+  const v = location.hash.replace(/^#\/?/, "").split(/[/?]/)[0];
+  return VIEWS[v] ? v : "dashboard";
+}
+window.addEventListener("hashchange", () => {
+  if (!S.user) return;
+  const v = viewFromHash();
+  if (v === S.view) return;
+  S.view = v;
+  closeDrawer();
+  renderTabs();
+  renderMain(true);
+});
+function themeNow() {
+  return document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+}
+function toggleTheme() {
+  const next = themeNow() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  safeSet("fv-theme", next);
+  renderTabs();
+}
+
 function renderShell() {
-  const app = $("#app");
-  put(app, 
+  S.view = viewFromHash();
+  const collapsed = safeGet("fv-side") === "collapsed";
+  put(
+    $("#app"),
     h(
       "div",
-      { class: "topbar" },
-      h("div", { class: "brand" }, h("img", { src: "/favicon.png", alt: "" }), "FleetView", h("small", {}, S.master?.name ?? "")),
-      h("nav", { class: "tabs", id: "tabs" }),
-      h("div", { class: "spacer" }),
-      h("button", { class: "btn", onclick: () => openTasks() }, "Maintenance"),
-      h("button", { class: "btn primary", onclick: () => openInstall() }, "＋ Install software"),
-      h("span", { class: "who" }, S.user),
+      { class: `shell${collapsed ? " collapsed" : ""}`, id: "shell" },
+      h("aside", { class: "side", id: "side" }),
+      h("div", { class: "side-scrim", onclick: () => $("#shell").classList.remove("nav-open") }),
       h(
-        "button",
-        {
-          class: "btn ghost small",
-          title: "Light / dark",
-          onclick: () => {
-            const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-            const next = cur === "dark" ? "light" : "dark";
-            document.documentElement.dataset.theme = next;
-            safeSet("fv-theme", next);
-          },
-        },
-        "◐",
-      ),
-      h(
-        "button",
-        {
-          class: "btn ghost small",
-          onclick: async () => {
-            lockVault();
-            await api("POST", "/api/logout").catch(() => {});
-            showLogin();
-          },
-        },
-        "Sign out",
+        "div",
+        { class: "content" },
+        h(
+          "header",
+          { class: "hdr" },
+          h("button", { class: "icon-btn only-sm", title: "Menu", onclick: () => $("#shell").classList.add("nav-open") }, icon("menu")),
+          h("div", { class: "hdr-title", id: "hdr-title" }),
+          h("div", { class: "spacer" }),
+          h("button", { class: "search-trigger", onclick: () => openPalette() }, icon("search", 16), h("span", { class: "grow" }, "Search computers, pages, actions…"), h("kbd", {}, "Ctrl K")),
+          h("button", { class: "icon-btn only-sm", title: "Search (Ctrl+K)", onclick: () => openPalette() }, icon("search")),
+          h("div", { id: "hdr-running" }),
+          h("button", { class: "btn primary", onclick: () => openInstall() }, icon("download", 16), h("span", { class: "hide-sm" }, "Install software")),
+        ),
+        h("main", { id: "main" }),
       ),
     ),
-    h("main", { id: "main" }),
     h("div", { id: "drawer-root" }),
   );
   renderTabs();
   renderMain(true);
 }
 
+/** Sidebar and header: navigation, counts, user. (Name kept: called on every update.) */
 function renderTabs() {
-  const nav = $("#tabs");
-  if (!nav) return;
+  const side = $("#side");
+  if (!side) return;
   const running = [...S.jobs.values()].filter((j) => ["queued", "preparing", "sending", "installing", "running"].some((s) => j.counts[s])).length;
-  const tab = (id, label, count) =>
-    h("button", { class: `tab${S.view === id ? " active" : ""}`, onclick: () => go(id) }, label, count ? h("span", { class: "count" }, count) : null);
-  put(nav, tab("computers", "Computers"), tab("apply", "Apply"), tab("scripts", "Scripts"), tab("startup", "Startup"), tab("vault", "Passwords"), tab("activity", "Activity", running), tab("settings", "Settings"));
+  const agents = [...S.agents.values()];
+  const attention = agents.filter((a) => issuesOf(a).length).length;
+  const counts = { computers: attention ? { n: attention, cls: "warn", title: `${attention} need attention` } : null, activity: running ? { n: running, cls: "blue", title: `${running} running` } : null };
+  const item = (id) => {
+    const v = VIEWS[id];
+    const c = counts[id];
+    return h(
+      "a",
+      { href: `#/${id}`, class: `nav-item${S.view === id ? " active" : ""}`, title: v.label, onclick: (e) => { e.preventDefault(); go(id); } },
+      icon(v.icon, 18),
+      h("span", { class: "nav-label" }, v.label),
+      c ? h("span", { class: `nav-count ${c.cls}`, title: c.title }, c.n) : null,
+    );
+  };
+  const sections = [...new Set(Object.values(VIEWS).map((v) => v.section))];
+  const dark = themeNow() === "dark";
+  put(
+    side,
+    h(
+      "div",
+      { class: "side-brand" },
+      h("img", { src: "/favicon.png", alt: "" }),
+      h("div", { class: "nav-label brand-text" }, h("b", {}, "FleetView"), h("small", {}, S.master?.name ?? "")),
+    ),
+    h(
+      "nav",
+      { class: "side-nav" },
+      sections.map((sec) => [
+        sec ? h("div", { class: "nav-section" }, h("span", { class: "nav-label" }, sec)) : null,
+        Object.keys(VIEWS).filter((id) => VIEWS[id].section === sec).map(item),
+      ]),
+    ),
+    h(
+      "div",
+      { class: "side-foot" },
+      h("div", { class: "side-user", title: S.user ?? "" }, h("span", { class: "avatar sm" }, (S.user ?? "?").slice(0, 1).toUpperCase()), h("span", { class: "nav-label grow" }, S.user)),
+      h(
+        "div",
+        { class: "side-tools" },
+        h("button", { class: "icon-btn", title: dark ? "Light theme" : "Dark theme", onclick: toggleTheme }, icon(dark ? "sun" : "moon")),
+        h("button", {
+          class: "icon-btn",
+          title: "Sign out",
+          onclick: async () => {
+            lockVault();
+            await api("POST", "/api/logout").catch(() => {});
+            showLogin();
+          },
+        }, icon("logout")),
+        h("button", {
+          class: "icon-btn collapse-btn",
+          title: "Collapse / expand the menu",
+          onclick: () => {
+            const s = $("#shell");
+            s.classList.toggle("collapsed");
+            safeSet("fv-side", s.classList.contains("collapsed") ? "collapsed" : "open");
+          },
+        }, icon("panel")),
+      ),
+    ),
+  );
+  const title = $("#hdr-title");
+  if (title) put(title, h("span", { class: "crumb-root" }, "FleetView"), icon("chevronRight", 14), h("b", {}, VIEWS[S.view]?.label ?? ""));
+  const run = $("#hdr-running");
+  if (run) put(run, running ? h("button", { class: "run-pill", onclick: () => go("activity"), title: "Actions in progress" }, h("span", { class: "pulse" }), `${running} running`) : null);
+  document.title = `${VIEWS[S.view]?.label ?? "FleetView"} · FleetView`;
 }
 
 function go(view) {
+  if (!VIEWS[view]) view = "dashboard";
+  $("#shell")?.classList.remove("nav-open");
   S.view = view;
+  if (location.hash !== `#/${view}`) history.pushState(null, "", `#/${view}`);
   renderTabs();
   renderMain(true);
+  $("#main")?.scrollTo?.(0, 0);
+  window.scrollTo(0, 0);
 }
 
 function renderMain(full = false) {
   const main = $("#main");
   if (!main) return;
+  if (S.view !== "vault") main.dataset.view = S.view;
+  if (S.view === "dashboard") return renderDashboard(main);
   if (S.view === "computers") return renderComputers(main, full);
   if (S.view === "activity") return renderActivity(main);
   if (S.view === "settings") return renderSettings(main, full);
@@ -381,94 +488,328 @@ function lockVault() {
   vaultModule?.lockVault("signed out");
 }
 
+/** A page title row: title, optional subtitle, buttons on the right. */
+function pageHead(title, sub, ...tools) {
+  return h("div", { class: "page-head" }, h("div", { class: "page-titles" }, h("h1", {}, title), sub ? h("p", { class: "page-sub" }, sub) : null), h("div", { class: "spacer" }), ...tools);
+}
+
+// --------------------------------------------------------- command palette --
+function openPalette(initial = "") {
+  if ($(".pal-scrim")) return;
+  let q = initial;
+  let idx = 0;
+  let shown = [];
+  const close = () => {
+    root.remove();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const runItem = (it) => {
+    close();
+    it?.run();
+  };
+  const input = h("input", { type: "text", class: "pal-input", value: q, placeholder: "Search computers, pages and actions…", autocomplete: "off", spellcheck: "false", oninput: (e) => { q = e.target.value; idx = 0; paint(); } });
+  const list = h("div", { class: "pal-list" });
+  const root = h(
+    "div",
+    { class: "pal-scrim", onclick: (e) => e.target === root && close() },
+    h("div", { class: "palette", role: "dialog", "aria-label": "Search" },
+      h("div", { class: "pal-top" }, icon("search", 18), input, h("kbd", {}, "Esc")),
+      list,
+      h("div", { class: "pal-foot" }, h("span", {}, h("kbd", {}, "↑"), h("kbd", {}, "↓"), " move"), h("span", {}, h("kbd", {}, "Enter"), " open"), h("span", {}, h("kbd", {}, "Esc"), " close"))),
+  );
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); idx = Math.min(shown.length - 1, idx + 1); mark(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); idx = Math.max(0, idx - 1); mark(); }
+    else if (e.key === "Enter") { e.preventDefault(); runItem(shown[idx]); }
+  };
+  const items = () => [
+    ...Object.entries(VIEWS).map(([id, v]) => ({ group: "Pages", icon: v.icon, label: v.label, sub: "", run: () => go(id) })),
+    { group: "Actions", icon: "download", label: "Install software", sub: "push an .exe or .msi", run: () => openInstall() },
+    { group: "Actions", icon: "layers", label: "Apply changes", sub: "several changes on many PCs", run: () => openApply() },
+    { group: "Actions", icon: "wrench", label: "Maintenance", sub: "updates, repair, cleanup, restart…", run: () => openTasks() },
+    { group: "Actions", icon: "shieldCheck", label: "Security check on all online PCs", sub: "read-only", run: () => openTasks({ task: "security_status" }) },
+    { group: "Actions", icon: "terminal", label: "New saved script", sub: "", run: () => { go("scripts"); openScriptEditor(); } },
+    { group: "Actions", icon: themeNow() === "dark" ? "sun" : "moon", label: `Switch to ${themeNow() === "dark" ? "light" : "dark"} theme`, sub: "", run: toggleTheme },
+    ...[...S.agents.values()]
+      .sort((a, b) => (b.online - a.online) || a.hostname.localeCompare(b.hostname))
+      .map((a) => ({ group: "Computers", icon: "monitor", online: a.online, label: a.hostname, sub: [a.user?.split("\\").pop(), a.ip, a.online ? "online" : `offline · ${ago(a.last_seen)}`, ...(a.tags ?? [])].filter(Boolean).join(" · "), run: () => openDevice(a.id) })),
+  ];
+  const mark = () => {
+    list.querySelectorAll(".pal-item").forEach((el, i) => el.classList.toggle("active", i === idx));
+    list.querySelector(".pal-item.active")?.scrollIntoView({ block: "nearest" });
+  };
+  function paint() {
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const hit = (it) => words.every((w) => `${it.label} ${it.sub} ${it.group}`.toLowerCase().includes(w));
+    const all = items().filter(hit);
+    // Computers first when searching; pages and actions first otherwise.
+    const order = words.length ? ["Computers", "Actions", "Pages"] : ["Pages", "Actions", "Computers"];
+    const caps = { Computers: words.length ? 12 : 6, Actions: 8, Pages: 8 };
+    shown = [];
+    const groups = order.map((g) => {
+      const its = all.filter((x) => x.group === g).slice(0, caps[g]);
+      if (!its.length) return null;
+      return h("div", { class: "pal-group" }, h("div", { class: "pal-gtitle" }, g), its.map((it) => {
+        const i = shown.push(it) - 1;
+        return h("button", { class: "pal-item", onmouseenter: () => { idx = i; mark(); }, onclick: () => runItem(it) },
+          h("span", { class: "pal-ico" }, icon(it.icon, 16)),
+          it.group === "Computers" ? h("span", { class: `dot${it.online ? " on" : ""}` }) : null,
+          h("span", { class: "grow" }, h("b", {}, it.label), it.sub ? h("span", { class: "sub" }, ` ${it.sub}`) : null),
+          h("span", { class: "pal-go" }, icon("chevronRight", 14)));
+      }));
+    });
+    put(list, shown.length ? groups : h("div", { class: "pal-empty" }, `Nothing matches “${q}”`));
+    idx = Math.min(idx, Math.max(0, shown.length - 1));
+    mark();
+  }
+  document.body.append(root);
+  document.addEventListener("keydown", onKey, true);
+  paint();
+  input.focus();
+}
+document.addEventListener("keydown", (e) => {
+  if (!S.user) return;
+  const typing = e.target.closest?.("input, textarea, select, [contenteditable]");
+  if ((e.key === "k" || e.key === "K") && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+    // The vault has its own Ctrl+K (search) while it is open.
+    if (S.view === "vault" && !S.drawer) return;
+    e.preventDefault();
+    openPalette();
+  } else if (e.key === "/" && !typing && !S.drawer && S.view !== "vault") {
+    e.preventDefault();
+    openPalette();
+  }
+});
+
+// Open dropdown menus close when clicking anywhere else.
+document.addEventListener("click", (e) => {
+  for (const m of document.querySelectorAll("details.menu[open]")) if (!m.contains(e.target)) m.open = false;
+});
+
+// ------------------------------------------------------------ attention --
+/** What needs a look on a PC, most serious first. */
+function issuesOf(a) {
+  const out = [];
+  const days = (iso) => (Date.now() - Date.parse(iso)) / 86400_000;
+  if (!a.online && a.last_seen && days(a.last_seen) > 7) out.push({ level: 1, icon: "wifiOff", text: `Offline for ${Math.floor(days(a.last_seen))} days` });
+  if (a.disk != null && a.disk >= 90) out.push({ level: 2, icon: "hardDrive", text: `Disk ${a.disk}% full` });
+  if (a.online && a.mem != null && a.mem >= 92) out.push({ level: 1, icon: "gauge", text: `Memory ${a.mem}% used` });
+  if (a.emanagement && ["error", "unsupported"].includes(a.emanagement.state)) out.push({ level: 2, icon: "alert", text: "MoldSign bridge not working" });
+  if (a.outdated) out.push({ level: 0, icon: "download", text: "Agent update available" });
+  if (a.pending_name) out.push({ level: 0, icon: "refresh", text: `Restart needed to become ${a.pending_name}` });
+  const sec = lastRun(a.id, "Security check");
+  if (sec?.state === "failed") out.push({ level: 1, icon: "shield", text: sec.message?.replace(/^Off: /, "Protection off: ") || "Security check found protection off", job: sec.job.id });
+  for (const j of S.jobs.values()) {
+    const t = j.targets[a.id];
+    if (t?.state === "failed" && t.finished_at && days(t.finished_at) < 1 && j.title !== "Security check") {
+      out.push({ level: 2, icon: "alert", text: `Failed: ${j.title}`, job: j.id });
+      break;
+    }
+  }
+  return out.sort((x, y) => y.level - x.level);
+}
+
+// -------------------------------------------------------------- dashboard --
+function renderDashboard(main) {
+  const agents = [...S.agents.values()];
+  const online = agents.filter((a) => a.online).length;
+  const flagged = agents.map((a) => ({ a, issues: issuesOf(a) })).filter((x) => x.issues.length).sort((x, y) => y.issues[0].level - x.issues[0].level || x.a.hostname.localeCompare(y.a.hostname));
+  const jobs = [...S.jobs.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const running = jobs.filter((j) => ["queued", "preparing", "sending", "installing", "running"].some((s) => j.counts[s])).length;
+  const cleaned = agents.filter((a) => a.cleaned).length;
+  const speeds = agents.map((a) => a.speed?.down).filter((x) => x != null);
+  const avgDown = speeds.length ? Math.round(speeds.reduce((s, x) => s + x, 0) / speeds.length) : null;
+  const secChecked = agents.map((a) => lastRun(a.id, "Security check")).filter((r) => r && ["succeeded", "failed"].includes(r.state));
+  const secOk = secChecked.filter((r) => r.state === "succeeded").length;
+  const current = agents.filter((a) => !a.outdated).length;
+  const hr = new Date().getHours();
+  const hello = hr < 5 ? "Good evening" : hr < 12 ? "Good morning" : hr < 18 ? "Good afternoon" : "Good evening";
+  const showComputers = (filter) => { S.filter = filter; go("computers"); };
+
+  const kpi = (ic, tone, label, value, foot, onclick) =>
+    h("button", { class: `kpi ${tone}`, onclick }, h("span", { class: "kpi-ico" }, icon(ic, 20)), h("span", { class: "kpi-body" }, h("span", { class: "kpi-label" }, label), h("b", { class: "kpi-value" }, value), h("span", { class: "kpi-foot" }, foot)));
+  const health = (label, n, total, tone, onclick) => {
+    const pct = total ? Math.round((n / total) * 100) : 0;
+    return h("button", { class: "health-row", onclick }, h("div", { class: "row" }, h("span", { class: "grow" }, label), h("b", {}, total ? `${n} / ${total}` : "—"), h("span", { class: "sub" }, total ? ` ${pct}%` : "")), h("div", { class: `hbar ${tone}` }, h("i", { style: { width: `${pct}%` } })));
+  };
+
+  put(
+    main,
+    pageHead(`${hello}, ${S.user ?? ""}`, `${new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" })} · ${plural(agents.length, "computer")} in ${S.master?.name || "this fleet"}`,
+      h("button", { class: "btn", onclick: () => openApply() }, icon("layers", 16), "Apply changes"),
+      h("button", { class: "btn", onclick: () => openTasks() }, icon("wrench", 16), "Maintenance")),
+    h(
+      "div",
+      { class: "kpis" },
+      kpi("monitor", "blue", "Online now", `${online} / ${agents.length}`, agents.length - online ? `${agents.length - online} offline` : "all online", () => showComputers("online")),
+      kpi("alert", flagged.length ? "warn" : "ok", "Need attention", flagged.length, flagged.length ? "see the list below" : "nothing to fix", () => showComputers("attention")),
+      kpi("activity", "violet", "Actions running", running, `${jobs.filter((j) => j.counts.failed).length} recent with failures`, () => go("activity")),
+      kpi("sparkles", "ok", "Cleaned", `${cleaned} / ${agents.length}`, agents.length - cleaned ? `${agents.length - cleaned} not yet` : "all cleaned", () => showComputers("dirty")),
+      kpi("wifi", "teal", "Internet (avg ↓)", avgDown != null ? `${avgDown} Mbps` : "—", speeds.length ? `from ${plural(speeds.length, "PC")}` : "no speed tests yet", () => go("apply")),
+    ),
+    h(
+      "div",
+      { class: "dash-grid" },
+      h(
+        "section",
+        { class: "card dash-attn" },
+        h("div", { class: "card-head" }, h("h3", {}, "Needs attention"), h("span", { class: "spacer" }), flagged.length ? h("button", { class: "btn ghost small", onclick: () => showComputers("attention") }, "View all", icon("chevronRight", 14)) : null),
+        flagged.length
+          ? h("div", { class: "attn-list" }, flagged.slice(0, 8).map(({ a, issues }) =>
+              h("button", { class: "attn", onclick: () => (issues[0].job && issues[0].level >= 2 ? openJob(issues[0].job) : openDevice(a.id)) },
+                h("span", { class: `attn-ico lvl${issues[0].level}` }, icon(issues[0].icon, 16)),
+                h("span", { class: "grow" }, h("b", {}, a.hostname), h("span", { class: "sub" }, issues[0].text), issues.length > 1 ? h("span", { class: "sub" }, ` · +${issues.length - 1} more`) : null),
+                h("span", { class: `dot${a.online ? " on" : ""}` }),
+                icon("chevronRight", 14, "dim"))))
+          : h("div", { class: "empty-state" }, h("span", { class: "es-ico ok" }, icon("checkCircle", 28)), h("b", {}, "All good"), h("span", {}, "No computer needs attention right now.")),
+      ),
+      h(
+        "section",
+        { class: "card dash-health" },
+        h("div", { class: "card-head" }, h("h3", {}, "Fleet health")),
+        health("Online", online, agents.length, "blue", () => showComputers("online")),
+        health("Cleaned", cleaned, agents.length, "ok", () => showComputers("dirty")),
+        health("Security check passed", secOk, secChecked.length, secChecked.length && secOk < secChecked.length ? "warn" : "ok", () => openTasks({ task: "security_status" })),
+        health("Agent up to date", current, agents.length, "violet", () => showComputers("outdated")),
+        secChecked.length < agents.length ? h("div", { class: "sub", style: { marginTop: "8px" } }, `${agents.length - secChecked.length} PC(s) never had a security check. `, h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTasks({ task: "security_status" }); } }, "Run it")) : null,
+      ),
+      h(
+        "section",
+        { class: "card dash-activity" },
+        h("div", { class: "card-head" }, h("h3", {}, "Recent activity"), h("span", { class: "spacer" }), h("button", { class: "btn ghost small", onclick: () => go("activity") }, "All activity", icon("chevronRight", 14))),
+        jobs.length
+          ? jobs.slice(0, 7).map((j) => h("button", { class: "act-row", onclick: () => openJob(j.id) },
+              h("span", { class: "grow" }, h("b", {}, j.title), h("span", { class: "sub" }, `${ago(j.created_at)} · ${plural(Object.keys(j.targets).length, "computer")}${j.by ? ` · ${j.by}` : ""}`)),
+              summaryBar(j, false),
+              statePill(overallState(j))))
+          : h("div", { class: "empty-state" }, h("span", { class: "es-ico" }, icon("activity", 28)), h("b", {}, "Nothing yet"), h("span", {}, "Installs, tasks and scripts show up here with a result per computer.")),
+      ),
+      h(
+        "section",
+        { class: "card dash-quick" },
+        h("div", { class: "card-head" }, h("h3", {}, "Quick actions")),
+        h("div", { class: "quick-grid" },
+          [
+            ["download", "Install software", "Push an .exe or .msi silently", () => openInstall()],
+            ["layers", "New PC setup", "Baseline, adblock, debloat, updates", () => { AP.steps = []; APPLY_PRESETS[0].steps.forEach(apAdd); AP.name = "New PC setup"; openApply(); }],
+            ["shieldCheck", "Health check", "Security, updates, disks, speed", () => { AP.steps = []; APPLY_PRESETS.find((p) => p.id === "health").steps.forEach(apAdd); AP.name = "Health check"; openApply(); }],
+            ["refresh", "Fix Windows Update", "Repair, then install updates", () => { AP.steps = []; APPLY_PRESETS.find((p) => p.id === "updates").steps.forEach(apAdd); AP.name = "Fix & install updates"; openApply(); }],
+          ].map(([ic, t, s, fn]) => h("button", { class: "quick", onclick: fn }, h("span", { class: "quick-ico" }, icon(ic, 18)), h("b", {}, t), h("span", { class: "sub" }, s)))),
+      ),
+    ),
+  );
+}
+
 // -------------------------------------------------------------- computers --
+const SORTS = {
+  name: (a, b) => a.hostname.localeCompare(b.hostname),
+  status: (a, b) => (b.online - a.online) || issuesOf(b).length - issuesOf(a).length,
+  user: (a, b) => String(a.user ?? "~").localeCompare(String(b.user ?? "~")),
+  cpu: (a, b) => (a.online ? a.cpu ?? -1 : -1) - (b.online ? b.cpu ?? -1 : -1),
+  mem: (a, b) => (a.mem ?? -1) - (b.mem ?? -1),
+  disk: (a, b) => (a.disk ?? -1) - (b.disk ?? -1),
+  net: (a, b) => (a.speed?.down ?? -1) - (b.speed?.down ?? -1),
+  agent: (a, b) => String(a.agent_version).localeCompare(String(b.agent_version), undefined, { numeric: true }),
+  seen: (a, b) => (a.online - b.online) || String(a.last_seen ?? "").localeCompare(String(b.last_seen ?? "")),
+};
+S.sort = { key: "status", dir: 1 };
+S.tag = "";
+
 function filteredAgents() {
   const q = S.query.trim().toLowerCase();
+  const sort = SORTS[S.sort.key] ?? SORTS.status;
   return [...S.agents.values()]
     .filter((a) => {
       if (S.filter === "online" && !a.online) return false;
       if (S.filter === "offline" && a.online) return false;
       if (S.filter === "outdated" && !a.outdated) return false;
       if (S.filter === "dirty" && a.cleaned) return false;
+      if (S.filter === "attention" && !issuesOf(a).length) return false;
+      if (S.tag && !(a.tags ?? []).includes(S.tag)) return false;
       if (!q) return true;
       return [a.hostname, a.user, a.ip, a.os, ...(a.tags ?? [])].some((x) => String(x ?? "").toLowerCase().includes(q));
     })
-    .sort((a, b) => (b.online - a.online) || a.hostname.localeCompare(b.hostname));
+    .sort((a, b) => S.sort.dir * sort(a, b) || a.hostname.localeCompare(b.hostname));
 }
 
 function renderComputers(main, full) {
   const agents = [...S.agents.values()];
-  const online = agents.filter((a) => a.online).length;
-  const outdated = agents.filter((a) => a.outdated).length;
-  const failing = [...S.jobs.values()].filter((j) => j.counts.failed).length;
-  const stats = h(
-    "div",
-    { class: "stats", id: "stats" },
-    h("div", { class: "stat" }, h("b", {}, `${online} / ${agents.length}`), h("span", {}, "computers online")),
-    h("div", { class: "stat" }, h("b", {}, [...S.jobs.values()].filter((j) => j.counts.installing || j.counts.sending || j.counts.running).length), h("span", {}, "actions running")),
-    h("div", { class: "stat" }, h("b", {}, failing), h("span", {}, "recent actions with failures")),
-    h("div", { class: "stat" }, h("b", {}, outdated), h("span", {}, "agents to update")),
-  );
-
   if (full || !$("#devtable")) {
-    const search = h("input", {
-      type: "search",
-      class: "search",
-      placeholder: "Search name, user, IP, tag…",
-      value: S.query,
-      oninput: (e) => {
-        S.query = e.target.value;
-        renderRows();
-      },
-    });
-    const chip = (id, label) =>
-      h("button", { class: `chip${S.filter === id ? " active" : ""}`, onclick: () => { S.filter = id; renderComputers(main, true); } }, label);
-    put(main, 
-      h("div", { class: "page-head" }, h("h1", {}, "Computers")),
-      stats,
+    const count = (f) => agents.filter(f).length;
+    const seg = (id, label, n) => h("button", { class: S.filter === id ? "active" : "", onclick: () => { S.filter = id; renderComputers(main, true); } }, label, n != null ? h("span", { class: "seg-n" }, n) : null);
+    const tags = [...new Set(agents.flatMap((a) => a.tags ?? []))].sort();
+    const th = (key, label, cls = "") =>
+      h("th", { class: `sortable ${cls}${S.sort.key === key ? " sorted" : ""}`, onclick: () => { S.sort = { key, dir: S.sort.key === key ? -S.sort.dir : key === "name" || key === "user" ? 1 : -1 }; renderComputers(main, true); } },
+        h("span", { class: "th-in" }, label, icon(S.sort.key === key ? (S.sort.dir > 0 ? "chevronUp" : "chevronDown") : "sort", 13)));
+    put(
+      main,
+      pageHead("Computers", `${count((a) => a.online)} of ${agents.length} online`,
+        h("button", { class: "btn", onclick: () => openTasks() }, icon("wrench", 16), "Maintenance"),
+        h("button", { class: "btn", onclick: () => openApply() }, icon("layers", 16), "Apply changes")),
       h(
         "div",
-        { class: "card" },
-        h("div", { class: "toolbar" }, search, h("div", { class: "chips" }, chip("all", "All"), chip("online", "Online"), chip("offline", "Offline"), chip("outdated", "Agent outdated"), chip("dirty", "Not cleaned"))),
+        { class: "card grid-card" },
         h(
-          "table",
-          { id: "devtable" },
+          "div",
+          { class: "toolbar" },
+          h("div", { class: "input-ico" }, icon("search", 16), h("input", { type: "search", class: "search", placeholder: "Search name, user, IP, tag…", value: S.query, oninput: (e) => { S.query = e.target.value; renderRows(); } })),
+          h("div", { class: "seg seg-filter" },
+            seg("all", "All", agents.length),
+            seg("online", "Online", count((a) => a.online)),
+            seg("offline", "Offline", count((a) => !a.online)),
+            seg("attention", "Needs attention", count((a) => issuesOf(a).length)),
+            seg("dirty", "Not cleaned", count((a) => !a.cleaned)),
+            count((a) => a.outdated) ? seg("outdated", "Agent outdated", count((a) => a.outdated)) : null),
+          tags.length
+            ? h("select", { class: "tag-select", title: "Only computers with this tag", onchange: (e) => { S.tag = e.target.value; renderRows(); } }, h("option", { value: "" }, "All tags"), tags.map((t) => h("option", { value: t, selected: S.tag === t }, t)))
+            : null,
+          h("span", { class: "spacer" }),
+          h("span", { class: "sub", id: "rowcount" }),
+        ),
+        h(
+          "div",
+          { class: "table-wrap" },
           h(
-            "thead",
-            {},
+            "table",
+            { id: "devtable", class: "grid" },
             h(
-              "tr",
+              "thead",
               {},
-              h("th", { class: "cb" }, h("input", { type: "checkbox", id: "selall", title: "Select all shown", onclick: (e) => {
-                const ids = filteredAgents().map((a) => a.id);
-                if (e.target.checked) ids.forEach((id) => S.selected.add(id));
-                else ids.forEach((id) => S.selected.delete(id));
-                renderRows();
-              } })),
-              h("th", {}, "Computer"),
-              h("th", { class: "hide-sm" }, "User"),
-              h("th", { class: "hide-sm" }, "CPU"),
-              h("th", { class: "hide-sm" }, "Memory"),
-              h("th", { class: "hide-sm" }, "Disk"),
-              h("th", { class: "hide-sm" }, "Internet"),
-              h("th", { class: "hide-sm" }, "Agent"),
+              h(
+                "tr",
+                {},
+                h("th", { class: "cb" }, h("input", { type: "checkbox", id: "selall", title: "Select all shown", onclick: (e) => {
+                  const ids = filteredAgents().map((a) => a.id);
+                  if (e.target.checked) ids.forEach((id) => S.selected.add(id));
+                  else ids.forEach((id) => S.selected.delete(id));
+                  renderRows();
+                } })),
+                th("name", "Computer"),
+                th("status", "Status"),
+                th("user", "User", "hide-sm"),
+                th("cpu", "CPU", "hide-md"),
+                th("mem", "Memory", "hide-md"),
+                th("disk", "Disk", "hide-sm"),
+                th("net", "Internet", "hide-md"),
+                th("agent", "Agent", "hide-lg"),
+                h("th", { class: "act" }),
+              ),
             ),
+            h("tbody", { id: "devrows" }),
           ),
-          h("tbody", { id: "devrows" }),
         ),
       ),
       h("div", { id: "selbar-root" }),
     );
-  } else {
-    $("#stats").replaceWith(stats);
   }
   renderRows();
 }
 
 function meter(pct) {
   if (pct == null) return h("span", { class: "sub" }, "—");
-  const m = h("span", { class: `meter${pct >= 90 ? " hot" : pct >= 75 ? " warm" : ""}` }, h("i", { style: { width: `${pct}%` } }));
-  return h("span", {}, m, `${pct}%`);
+  const m = h("span", { class: `meter${pct >= 90 ? " hot" : pct >= 75 ? " warm" : ""}` }, h("i", { style: { width: `${Math.min(100, pct)}%` } }));
+  return h("span", { class: "meter-cell" }, m, h("span", { class: "meter-n" }, `${pct}%`));
 }
 
 function renderRows() {
@@ -476,28 +817,22 @@ function renderRows() {
   if (!tbody) return;
   const list = filteredAgents();
   for (const id of [...S.selected]) if (!S.agents.has(id)) S.selected.delete(id);
+  const rc = $("#rowcount");
+  if (rc) rc.textContent = list.length === S.agents.size ? plural(list.length, "computer") : `${list.length} of ${S.agents.size}`;
   if (!list.length) {
-    put(tbody, 
-      h(
-        "tr",
-        {},
-        h(
-          "td",
-          { colspan: 8 },
-          h(
-            "div",
-            { class: "empty" },
-            S.agents.size
-              ? [h("b", {}, "No computers match"), "Try another search or filter."]
-              : [h("b", {}, "No computers yet"), "Download the agent installer in Settings and run it on each PC. They appear here within seconds."],
-          ),
-        ),
-      ),
+    put(tbody,
+      h("tr", { class: "empty-row" }, h("td", { colspan: 10 },
+        h("div", { class: "empty-state" },
+          h("span", { class: "es-ico" }, icon("monitor", 28)),
+          S.agents.size
+            ? [h("b", {}, "No computers match"), h("span", {}, "Try another search or filter."), h("button", { class: "btn small", onclick: () => { S.query = ""; S.filter = "all"; S.tag = ""; renderComputers($("#main"), true); } }, "Clear filters")]
+            : [h("b", {}, "No computers yet"), h("span", {}, "Download the agent installer in Settings and run it on each PC. They appear here within seconds."), h("button", { class: "btn primary small", onclick: () => go("settings") }, "Get the agent")]))),
     );
   } else {
-    put(tbody, 
-      ...list.map((a) =>
-        h(
+    put(tbody,
+      ...list.map((a) => {
+        const issues = issuesOf(a);
+        return h(
           "tr",
           { class: S.selected.has(a.id) ? "selected" : "", onclick: (e) => { if (e.target.type !== "checkbox") openDevice(a.id); } },
           h("td", { class: "cb" }, h("input", { type: "checkbox", checked: S.selected.has(a.id), onclick: (e) => {
@@ -505,23 +840,27 @@ function renderRows() {
             e.target.checked ? S.selected.add(a.id) : S.selected.delete(a.id);
             renderRows();
           } })),
-          h(
-            "td",
-            {},
-            h("div", { class: "host" }, h("span", { class: `dot${a.online ? " on" : ""}` }), a.hostname,
-              a.pending_name ? h("span", { class: "pill warn", style: { marginLeft: "6px" }, title: "The new name takes effect when the PC restarts" }, `→ ${a.pending_name} · restart pending`) : null,
-              a.cleaned ? h("span", { class: "pill ok", style: { marginLeft: "6px" }, title: `Cleaned ${new Date(a.cleaned.at).toLocaleString()} by ${a.cleaned.by || "—"}${a.cleaned.note ? ` — ${a.cleaned.note}` : ""}` }, "✓ cleaned") : null),
-            h("div", { class: "sub" }, a.online ? [a.ip, a.os].filter(Boolean).join(" · ") : `offline · seen ${ago(a.last_seen)}`),
-          ),
-          h("td", { class: "hide-sm" }, a.user ? a.user.split("\\").pop() : h("span", { class: "sub" }, "—")),
-          h("td", { class: "hide-sm" }, a.online ? meter(a.cpu) : h("span", { class: "sub" }, "—")),
-          h("td", { class: "hide-sm" }, meter(a.mem)),
+          h("td", { class: "name-cell" },
+            h("div", { class: "pc-name" },
+              h("span", { class: "pc-ico" }, icon("monitor", 16)),
+              h("span", { class: "grow" },
+                h("span", { class: "pc-line" }, h("b", {}, a.hostname), (a.tags ?? []).slice(0, 2).map((t) => h("span", { class: "tag" }, t))),
+                h("span", { class: "sub pc-meta" }, [a.ip, a.os?.replace(/^Microsoft /, "")].filter(Boolean).join(" · ") || "—")))),
+          h("td", {},
+            h("div", { class: "status-cell" },
+              h("span", { class: `status ${a.online ? "on" : "off"}` }, h("span", { class: "sdot" }), a.online ? "Online" : `Offline · ${ago(a.last_seen)}`),
+              a.cleaned ? h("span", { class: "badge ok", title: `Cleaned ${new Date(a.cleaned.at).toLocaleString()} by ${a.cleaned.by || "—"}${a.cleaned.note ? ` — ${a.cleaned.note}` : ""}` }, icon("sparkles", 12), "Cleaned") : null,
+              a.pending_name ? h("span", { class: "badge warn", title: "The new name takes effect when the PC restarts" }, `→ ${a.pending_name}`) : null,
+              issues.length ? h("span", { class: `badge ${issues[0].level >= 2 ? "bad" : "warn"}`, title: issues.map((i) => i.text).join("\n") }, icon("alert", 12), issues.length === 1 ? issues[0].text : `${issues.length} issues`) : null)),
+          h("td", { class: "hide-sm" }, a.user ? h("span", { class: "user-cell" }, icon("user", 14, "dim"), a.user.split("\\").pop()) : h("span", { class: "sub" }, "—")),
+          h("td", { class: "hide-md" }, a.online ? meter(a.cpu) : h("span", { class: "sub" }, "—")),
+          h("td", { class: "hide-md" }, meter(a.mem)),
           h("td", { class: "hide-sm" }, meter(a.disk)),
-          h("td", { class: "hide-sm" }, a.speed?.down != null ? h("span", { title: `${ago(a.speed.at)}${a.speed.ping != null ? ` · ${r1(a.speed.ping)} ms` : ""}` }, `↓${Math.round(a.speed.down)} ↑${Math.round(a.speed.up ?? 0)}`, h("span", { class: "sub" }, " Mbps")) : h("span", { class: "sub" }, "—")),
-          h("td", { class: "hide-sm" }, a.agent_version || "—", a.outdated ? h("span", { class: "pill warn", style: { marginLeft: "6px" } }, "update") : null,
-            a.emanagement && ["error", "unsupported"].includes(a.emanagement.state) ? h("span", { class: "pill bad", style: { marginLeft: "6px" }, title: a.emanagement.detail ?? "" }, "MoldSign ✗") : null),
-        ),
-      ),
+          h("td", { class: "hide-md" }, a.speed?.down != null ? h("span", { class: "net-cell", title: `${ago(a.speed.at)}${a.speed.ping != null ? ` · ${r1(a.speed.ping)} ms` : ""}` }, h("b", {}, Math.round(a.speed.down)), h("span", { class: "sub" }, ` / ${Math.round(a.speed.up ?? 0)} Mbps`)) : h("span", { class: "sub" }, "—")),
+          h("td", { class: "hide-lg" }, h("span", { class: "mono" }, a.agent_version || "—"), a.outdated ? h("span", { class: "badge warn", style: { marginLeft: "6px" } }, "update") : null),
+          h("td", { class: "act" }, h("span", { class: "row-go" }, icon("chevronRight", 16))),
+        );
+      }),
     );
   }
   const all = $("#selall");
@@ -539,18 +878,19 @@ function renderSelbar() {
     h(
       "div",
       { class: "selbar" },
-      h("b", {}, plural(n, "computer"), " selected"),
-      h("button", { class: "btn primary", onclick: () => openApply(ids) }, "Apply changes"),
-      h("button", { class: "btn", onclick: () => openInstall({ mode: "selected" }) }, "Install software"),
-      h("button", { class: "btn", onclick: () => openTasks({ ids }) }, "Maintenance"),
-      h("button", { class: "btn", onclick: () => setCleaned(ids, true) }, "Mark cleaned"),
-      h("button", { class: "btn", onclick: () => openAccountsBulk(ids) }, "Accounts"),
-      h("button", { class: "btn", onclick: () => openRunScript({ ids }) }, "Run script"),
-      h("button", { class: "btn", onclick: () => openScript(ids) }, "PowerShell"),
-      h("button", { class: "btn", onclick: () => openRename(ids) }, "Rename"),
-      h("button", { class: "btn", onclick: () => openMessage(ids) }, "Message"),
-      h("button", { class: "btn", onclick: () => openAgentSettings(ids) }, "Agent settings"),
-      h("button", { class: "btn ghost", onclick: () => { S.selected.clear(); renderRows(); } }, "Clear"),
+      h("span", { class: "sel-count" }, h("b", {}, n), n === 1 ? " computer" : " computers"),
+      h("span", { class: "sel-sep" }),
+      h("button", { class: "btn primary", onclick: () => openApply(ids) }, icon("layers", 16), "Apply changes"),
+      h("button", { class: "btn", onclick: () => openInstall({ mode: "selected" }) }, icon("download", 16), "Install"),
+      h("button", { class: "btn", onclick: () => openTasks({ ids }) }, icon("wrench", 16), "Maintenance"),
+      h("button", { class: "btn", onclick: () => openRunScript({ ids }) }, icon("terminal", 16), "Run script"),
+      h("button", { class: "btn", onclick: () => setCleaned(ids, true) }, icon("sparkles", 16), "Mark cleaned"),
+      h("details", { class: "menu sel-more" },
+        h("summary", { class: "btn" }, icon("more", 16), "More"),
+        h("div", { class: "card menu-list menu-up" },
+          [["users", "Accounts", () => openAccountsBulk(ids)], ["terminal", "PowerShell", () => openScript(ids)], ["edit", "Rename", () => openRename(ids)], ["message", "Message the user", () => openMessage(ids)], ["settings", "Agent settings", () => openAgentSettings(ids)]]
+            .map(([ic, l, fn]) => h("button", { class: "menu-item", onclick: (e) => { e.target.closest("details").open = false; fn(); } }, icon(ic, 16), l)))),
+      h("button", { class: "icon-btn", title: "Clear the selection", onclick: () => { S.selected.clear(); renderRows(); } }, icon("x", 18)),
     ),
   );
 }
@@ -1364,7 +1704,7 @@ function openDevice(id, startTab = "overview") {
     if (n) go2(n.id);
   };
   const d = {
-    title: S.agents.get(id)?.hostname ?? "Computer",
+    title: "Computer",
     wide: true,
     headTools: () => [
       h("button", { class: "btn ghost small", title: "Previous computer (↑ or K)", onclick: () => step(-1) }, "◀"),
@@ -1395,19 +1735,38 @@ function openDevice(id, startTab = "overview") {
       if (!a) return closeDrawer();
       const titles = { overview: "Overview", software: `Programs (${detail?.software?.length ?? a.software_count})`, startup: "Startup", accounts: "Accounts", history: "History" };
       const sub = h("div", { class: "subtabs" }, Object.keys(titles).map((k) => h("button", { class: tab === k ? "active" : "", onclick: () => { tab = k; if (k === "accounts" && !acc.list && !acc.loading) loadAccounts(); if (k === "startup" && !su.list && !su.loading) su.load(); d.paint(); } }, titles[k])));
+      const menuItem = (ic, label, fn, disabled = false) => h("button", { class: "menu-item", disabled, onclick: (e) => { e.target.closest("details").open = false; fn(); } }, icon(ic, 16), label);
       const actions = h(
         "div",
-        { class: "actions" },
-        h("button", { class: "btn primary", onclick: () => openApply([id]) }, "Apply changes…"),
-        h("button", { class: "btn", onclick: () => openInstall({ ids: [id] }) }, "Install software"),
-        h("button", { class: "btn", onclick: () => openTasks({ ids: [id] }) }, "Maintenance"),
-        h("button", { class: "btn", onclick: () => openRunScript({ ids: [id] }) }, "Run script"),
-        h("button", { class: "btn", onclick: () => openScript([id]) }, "PowerShell"),
-        h("button", { class: "btn", onclick: () => openRename([id]) }, "Rename"),
-        h("button", { class: "btn", disabled: !a.online, onclick: takeShot }, "Screenshot"),
-        h("button", { class: "btn", onclick: () => openMessage([id]) }, "Message"),
-        h("button", { class: "btn", onclick: () => openAgentSettings([id]) }, "Agent settings"),
-        h("button", { class: "btn ghost", disabled: !a.online, onclick: () => api("POST", `/api/agents/${id}/refresh`).then(() => setTimeout(() => d.render(), 1500)).catch(fail) }, "Refresh"),
+        { class: "pc-hero" },
+        h("span", { class: "pc-ico lg" }, icon("monitor", 22)),
+        h(
+          "div",
+          { class: "grow pc-hero-text" },
+          h("h2", {}, a.hostname, a.cleaned ? h("span", { class: "badge ok", title: `Cleaned ${new Date(a.cleaned.at).toLocaleString()}` }, icon("sparkles", 12), "Cleaned") : null),
+          h("div", { class: "pc-hero-meta" },
+            h("span", { class: `status ${a.online ? "on" : "off"}` }, h("span", { class: "sdot" }), a.online ? "Online" : `Offline · ${ago(a.last_seen)}`),
+            a.user ? h("span", {}, icon("user", 14, "dim"), a.user.split("\\").pop()) : null,
+            a.ip ? h("span", {}, icon("globe", 14, "dim"), a.ip) : null,
+            a.os ? h("span", { class: "hide-sm" }, icon("monitor", 14, "dim"), a.os.replace(/^Microsoft /, "")) : null),
+        ),
+        h(
+          "div",
+          { class: "pc-hero-actions" },
+          h("button", { class: "btn primary", onclick: () => openApply([id]) }, icon("layers", 16), "Apply changes"),
+          h("button", { class: "btn", onclick: () => openInstall({ ids: [id] }) }, icon("download", 16), "Install"),
+          h("button", { class: "btn", onclick: () => openTasks({ ids: [id] }) }, icon("wrench", 16), "Maintenance"),
+          h("details", { class: "menu" },
+            h("summary", { class: "btn" }, icon("more", 16), "More"),
+            h("div", { class: "card menu-list" },
+              menuItem("terminal", "Run saved script", () => openRunScript({ ids: [id] })),
+              menuItem("terminal", "PowerShell", () => openScript([id])),
+              menuItem("edit", "Rename PC", () => openRename([id])),
+              menuItem("camera", "Screenshot", takeShot, !a.online),
+              menuItem("message", "Message the user", () => openMessage([id])),
+              menuItem("settings", "Agent settings", () => openAgentSettings([id])),
+              menuItem("refresh", "Refresh data", () => api("POST", `/api/agents/${id}/refresh`).then(() => setTimeout(() => d.render(), 1500)).catch(fail), !a.online))),
+        ),
       );
       let content;
       if (tab === "overview") {
@@ -1927,7 +2286,7 @@ function renderApply(main, full) {
   for (const id of [...AP.ids]) if (!S.agents.has(id)) AP.ids.delete(id);
   put(
     main,
-    h("div", { class: "page-head" }, h("h1", {}, "Apply changes"), h("span", { class: "sub" }, "Pick changes and computers; every PC runs the list top to bottom.")),
+    pageHead("Apply changes", "Pick changes and computers — every PC runs the list from top to bottom, with a result per step."),
     h(
       "div",
       { class: "apply", id: "ap-root" },
@@ -2186,7 +2545,7 @@ function renderScripts(main, full) {
   main.dataset.view = "scripts";
   const list = [...S.scripts].sort((a, b) => a.name.localeCompare(b.name));
   put(main,
-    h("div", { class: "page-head" }, h("h1", {}, "Scripts"), h("div", { class: "spacer" }), h("button", { class: "btn primary", onclick: () => openScriptEditor() }, "＋ New script")),
+    pageHead("Scripts", "Saved PowerShell scripts to run on one PC, a selection or the whole fleet.", h("button", { class: "btn primary", onclick: () => openScriptEditor() }, icon("plus", 16), "New script")),
     h("p", { class: "sub", style: { marginTop: "-6px", marginBottom: "14px" } }, "PowerShell scripts saved on the master. Run one on a PC, the selected PCs or the whole fleet (offline PCs run it when they connect); every PC's result is in Activity. Scripts run as SYSTEM with no window."),
     h("div", { class: "card card-pad script-list" },
       list.length
@@ -2415,7 +2774,7 @@ function paintFleetStartup() {
 function renderActivity(main) {
   const jobs = [...S.jobs.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
   put(main, 
-    h("div", { class: "page-head" }, h("h1", {}, "Activity")),
+    pageHead("Activity", "Everything sent to the computers, with a result for each one."),
     h(
       "div",
       { class: "card" },
@@ -2669,7 +3028,7 @@ function renderSettings(main, full) {
     },
   });
   put(main, 
-    h("div", { class: "page-head" }, h("h1", {}, "Settings")),
+    pageHead("Settings", "The master, the agent installer and your sign-in."),
     h(
       "div",
       { class: "grid2" },

@@ -30,6 +30,9 @@ Push silent installers to one PC, a few, or all of them, and see each PC's resul
 
 ## What it does
 
+- **Home**: what needs attention across the fleet, health at a glance, recent
+  activity and quick actions. **Ctrl+K** (or `/`) searches computers, pages
+  and actions from anywhere.
 - **Computers**: online/offline status, user, Windows version, CPU/memory/disk,
   installed programs, agent version. Search and filters.
 - **Install software**: one screen. Drop an `.exe`/`.msi` (or reuse one you

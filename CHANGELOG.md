@@ -60,6 +60,21 @@ Older versions are described on the [releases page](https://github.com/Akulav/fl
   at a time), and a before/after comparison around the cleaned mark, per PC and for the fleet.
 - **Accounts** separate people's accounts from Windows defaults and setup leftovers (`defaultuser0`).
 
+### Changed — new console design
+- **New layout:** a sidebar with icons (Home; Devices: Computers, Apply changes, Activity; Configure: Scripts,
+  Startup apps; Security: Passwords; Admin: Settings) that collapses to icons, with a slide-out menu on phones;
+  a header with the page title and search. Every page has its own address (`#/computers`…), so Back and
+  bookmarks work.
+- **Home dashboard:** online, need attention, actions running, cleaned and average internet speed at a glance;
+  a *Needs attention* list (long offline, disk ≥ 90 %, memory ≥ 92 %, security check failed, recent failures,
+  MoldSign bridge, agent update, pending restart), fleet health bars, recent activity and quick actions.
+- **Search everything with Ctrl+K** (or `/`): computers, pages and actions, from anywhere.
+- **Computers** is a sortable grid (click a column) with a status column, issue badges, a *Needs attention*
+  filter, a tag filter, and a tidier selection bar (main actions plus *More*).
+- **PC page** has a header with the PC's status, user, IP and Windows, four main actions and a *More* menu.
+- New colours, type and icons (drawn in the app, no external files; the CSP is unchanged), light and dark.
+- **Sign-in** page redesigned.
+
 ### Changed
 - **The PC page** is a wide panel with the computer list on the left (search, click, ↑/↓ or J/K, ◀ ▶) and
   cards for the PC, performance, cleaning, internet, security and recent actions.
